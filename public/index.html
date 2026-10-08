@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Radio Calico</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600;700&family=Open+Sans:wght@400;600&display=swap">
+  <style>
+    :root {
+      --mint: #D8F2D5;
+      --forest: #1F4E23;
+      --teal: #38A29D;
+      --orange: #EFA63C;
+      --charcoal: #231F20;
+      --cream: #F5EADA;
+      --white: #FFFFFF;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: var(--white);
+      color: var(--charcoal);
+      font: 400 1rem/1.6 "Open Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    h1, h2 { font-family: "Montserrat", "Open Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+
+    header {
+      background: var(--teal);
+      color: var(--white);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    header img { width: 56px; height: 56px; border-radius: 50%; background: var(--mint); }
+    header h1 { margin: 0; font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
+
+    main {
+      flex: 1;
+      width: 100%;
+      max-width: 560px;
+      margin: 0 auto;
+      padding: 64px 16px;
+    }
+    .player {
+      background: var(--cream);
+      border-radius: 8px;
+      padding: 32px 24px;
+    }
+    .player h2 { margin: 0 0 4px; font-size: 1.5rem; font-weight: 600; line-height: 1.3; color: var(--forest); }
+    .tagline { margin: 0 0 24px; font-size: 0.875rem; line-height: 1.4; }
+
+    label { display: block; margin-bottom: 4px; font-size: 0.875rem; font-weight: 600; }
+    select {
+      width: 100%;
+      padding: 0.5rem;
+      border: 1px solid #CCC;
+      border-radius: 4px;
+      background: var(--white);
+      color: var(--charcoal);
+      font: inherit;
+    }
+    select:focus-visible, button:focus-visible, input:focus-visible {
+      outline: none;
+      border-color: var(--teal);
+      box-shadow: 0 0 0 3px rgba(56, 162, 157, 0.3);
+    }
+    .fields { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+    @media (max-width: 480px) { .fields { grid-template-columns: 1fr; } }
+
+    .controls { display: flex; align-items: center; gap: 16px; margin-top: 24px; }
+    .icon-btn {
+      flex: none;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--charcoal);
+      cursor: pointer;
+    }
+    .icon-btn svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    #play { width: 64px; height: 64px; background: var(--mint); border: 2px solid var(--forest); }
+    #play:hover:not(:disabled) { background: var(--white); }
+    #play:disabled { opacity: 0.5; cursor: not-allowed; }
+    #mute { width: 40px; height: 40px; }
+    #mute:hover { background: var(--mint); }
+    [hidden] { display: none !important; }
+
+    input[type=range] {
+      flex: 1;
+      min-width: 0;
+      height: 24px;
+      margin: 0;
+      background: transparent;
+      border-radius: 4px;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--charcoal); }
+    input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--charcoal); }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px; height: 16px; margin-top: -6px;
+      border: 0; border-radius: 50%; background: var(--teal);
+    }
+    input[type=range]::-moz-range-thumb { width: 16px; height: 16px; border: 0; border-radius: 50%; background: var(--teal); }
+
+    .status { display: flex; justify-content: space-between; gap: 16px; margin: 24px 0 0; font-size: 0.875rem; line-height: 1.4; }
+    #state.error { color: #A3271F; }
+    #format { font-weight: 600; color: var(--forest); text-align: right; }
+
+    footer { background: var(--cream); color: var(--forest); padding: 16px 24px; text-align: center; font-size: 0.875rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <img src="/logo.png" alt="Radio Calico logo">
+    <h1>Radio Calico</h1>
+  </header>
+
+  <main>
+    <section class="player" aria-label="Radio player">
+      <h2>Listen live</h2>
+      <p class="tagline">Kick back and enjoy crystal-clear, lossless audio.</p>
+
+      <div class="fields">
+        <div>
+          <label for="stream">Stream</label>
+          <select id="stream" disabled><option>Loading…</option></select>
+        </div>
+        <div>
+          <label for="quality">Quality</label>
+          <select id="quality" disabled><option>—</option></select>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button id="play" class="icon-btn" type="button" aria-label="Play" disabled>
+          <svg id="icon-play" width="28" height="28" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5l11 7-11 7z"/></svg>
+          <svg id="icon-pause" width="28" height="28" viewBox="0 0 24 24" aria-hidden="true" hidden><path d="M9 5v14M15 5v14"/></svg>
+        </button>
+        <button id="mute" class="icon-btn" type="button" aria-label="Mute">
+          <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 9v6h4l5 4V5L8 9z"/>
+            <path id="icon-waves" d="M16.5 8.5a5 5 0 010 7M19 6a8.5 8.5 0 010 12"/>
+            <path id="icon-muted" d="M17 9.5l5 5M22 9.5l-5 5" hidden/>
+          </svg>
+        </button>
+        <input id="volume" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Volume">
+      </div>
+
+      <p class="status">
+        <span id="state" role="status">Loading streams…</span>
+        <span id="format"></span>
+      </p>
+
+      <audio id="audio" preload="none"></audio>
+    </section>
+  </main>
+
+  <footer>Ad-free. Data-free. Subscription-free.</footer>
+
+  <script src="/vendor/hls/hls.min.js"></script>
+  <script>
+    const audio = document.getElementById('audio');
+    const streamSel = document.getElementById('stream');
+    const qualitySel = document.getElementById('quality');
+    const playBtn = document.getElementById('play');
+    const muteBtn = document.getElementById('mute');
+    const volume = document.getElementById('volume');
+    const stateEl = document.getElementById('state');
+    const formatEl = document.getElementById('format');
+
+    const LOSSLESS = /flac|alac/i;
+    let hls = null;
+    let wantPlay = false;
+
+    function setState(text, isError = false) {
+      stateEl.textContent = text;
+      stateEl.classList.toggle('error', isError);
+    }
+
+    function levelCodec(level) {
+      return level.audioCodec || level.attrs?.CODECS || '';
+    }
+
+    function levelLabel(level) {
+      const codec = levelCodec(level);
+      const kbps = level.bitrate ? ` · ${Math.round(level.bitrate / 1000)} kbps` : '';
+      // The manifest's declared bandwidth understates the FLAC rendition, so omit it.
+      if (LOSSLESS.test(codec)) return 'Lossless (FLAC)';
+      if (/mp4a/i.test(codec)) return `AAC${kbps}`;
+      return (codec || 'Default') + kbps;
+    }
+
+    function showFormat() {
+      const level = hls?.levels[hls.currentLevel];
+      formatEl.textContent = level ? levelLabel(level) : '';
+    }
+
+    function teardown() {
+      if (hls) { hls.destroy(); hls = null; }
+      audio.removeAttribute('src');
+      audio.load();
+      qualitySel.replaceChildren(new Option('—'));
+      qualitySel.disabled = true;
+      formatEl.textContent = '';
+    }
+
+    function loadStream(url) {
+      teardown();
+      if (!url) return;
+      setState('Connecting…');
+
+      if (window.Hls && Hls.isSupported()) {
+        hls = new Hls({ lowLatencyMode: false });
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          const levels = hls.levels;
+          qualitySel.replaceChildren(...levels.map((l, i) => new Option(levelLabel(l), i)));
+          qualitySel.disabled = levels.length < 2;
+          // Bitrate-based ABR would not reliably choose the lossless rendition,
+          // so pin it explicitly whenever the stream offers one.
+          const lossless = levels.findIndex((l) => LOSSLESS.test(levelCodec(l)));
+          const start = lossless === -1 ? levels.length - 1 : lossless;
+          hls.currentLevel = start;
+          qualitySel.value = start;
+          setState(wantPlay ? 'Buffering…' : 'Ready');
+          if (wantPlay) play();
+        });
+        hls.on(Hls.Events.LEVEL_SWITCHED, showFormat);
+        hls.on(Hls.Events.ERROR, (_, data) => {
+          if (!data.fatal) return;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            setState('Network problem, retrying…', true);
+            hls.startLoad();
+          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            setState('Playback problem, recovering…', true);
+            hls.recoverMediaError();
+          } else {
+            setState('This stream cannot be played.', true);
+            wantPlay = false;
+            teardown();
+          }
+        });
+        hls.loadSource(url);
+        hls.attachMedia(audio);
+      } else if (audio.canPlayType('application/vnd.apple.mpegurl')) {
+        // Native HLS (iOS Safari): the browser picks the rendition itself.
+        audio.src = url;
+        setState('Ready');
+        if (wantPlay) play();
+      } else {
+        setState('This browser cannot play HLS streams.', true);
+        playBtn.disabled = true;
+      }
+    }
+
+    function play() {
+      wantPlay = true;
+      // Jump to the live edge instead of resuming stale buffered audio.
+      if (hls?.liveSyncPosition) audio.currentTime = hls.liveSyncPosition;
+      audio.play().catch((err) => {
+        if (err.name === 'AbortError') return;
+        wantPlay = false;
+        setState(err.name === 'NotAllowedError' ? 'Press play to start.' : 'Could not start playback.', err.name !== 'NotAllowedError');
+      });
+    }
+
+    function syncPlayIcon() {
+      const playing = !audio.paused;
+      document.getElementById('icon-play').hidden = playing;
+      document.getElementById('icon-pause').hidden = !playing;
+      playBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    }
+
+    function syncMuteIcon() {
+      const silent = audio.muted || audio.volume === 0;
+      document.getElementById('icon-waves').toggleAttribute('hidden', silent);
+      document.getElementById('icon-muted').toggleAttribute('hidden', !silent);
+      muteBtn.setAttribute('aria-label', audio.muted ? 'Unmute' : 'Mute');
+    }
+
+    playBtn.addEventListener('click', () => {
+      if (audio.paused) play();
+      else { wantPlay = false; audio.pause(); }
+    });
+    audio.addEventListener('play', syncPlayIcon);
+    audio.addEventListener('pause', () => { syncPlayIcon(); if (!wantPlay) setState('Paused'); });
+    audio.addEventListener('playing', () => { setState('On air'); showFormat(); });
+    audio.addEventListener('waiting', () => { if (wantPlay) setState('Buffering…'); });
+
+    muteBtn.addEventListener('click', () => { audio.muted = !audio.muted; });
+    volume.addEventListener('input', () => { audio.volume = Number(volume.value); audio.muted = false; });
+    audio.addEventListener('volumechange', syncMuteIcon);
+    audio.volume = Number(volume.value);
+
+    streamSel.addEventListener('change', () => {
+      try { localStorage.setItem('stream', streamSel.value); } catch {}
+      loadStream(streamSel.value);
+    });
+    qualitySel.addEventListener('change', () => {
+      if (hls) hls.currentLevel = Number(qualitySel.value);
+    });
+
+    async function init() {
+      let streams;
+      try {
+        const res = await fetch('/api/streams');
+        if (!res.ok) throw new Error(res.statusText);
+        streams = await res.json();
+      } catch {
+        setState('Could not load the stream list.', true);
+        return;
+      }
+      if (!streams.length) {
+        streamSel.replaceChildren(new Option('No streams configured'));
+        setState('Add a stream URL to stream_URL.txt.', true);
+        return;
+      }
+      streamSel.replaceChildren(...streams.map((s) => new Option(s.name, s.url)));
+      streamSel.disabled = false;
+      playBtn.disabled = false;
+      let saved = null;
+      try { saved = localStorage.getItem('stream'); } catch {}
+      if (streams.some((s) => s.url === saved)) streamSel.value = saved;
+      loadStream(streamSel.value);
+    }
+
+    init();
+  </script>
+</body>
+</html>
