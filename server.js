@@ -34,7 +34,42 @@ app.get('/api/streams', (req, res) => {
   res.json(streams);
 });
 
-app.get('/api/health', (req, res) => {
+// Ratings are keyed by "Artist - Title" and an anonymous per-browser client id.
+const ratingCounts = db.prepare(
+  'SELECT COALESCE(SUM(value = 1), 0) AS up, COALESCE(SUM(value = -1), 0) AS down FROM ratings WHERE track = ?'
+);
+const ratingByClient = db.prepare('SELECT value FROM ratings WHERE track = ? AND client = ?');
+const upsertRating = db.prepare(
+  'INSERT INTO ratings (track, client, value) VALUES (?, ?, ?) ON CONFLICT (track, client) DO UPDATE SET value = excluded.value'
+);
+const deleteRating = db.prepare('DELETE FROM ratings WHERE track = ? AND client = ?');
+
+const isKey = (value, max) => typeof value === 'string' && value.length > 0 && value.length <= max;
+
+function ratingSummary(track, client) {
+  return { ...ratingCounts.get(track), mine: ratingByClient.get(track, client)?.value ?? 0 };
+}
+
+app.get('/api/ratings', (req, res) => {
+  const { track, client } = req.query;
+  if (!isKey(track, 500) || !isKey(client, 100)) {
+    return res.status(400).json({ error: 'track and client are required' });
+  }
+  res.json(ratingSummary(track, client));
+});
+
+// value is 1 (up), -1 (down) or 0 (clear).
+app.post('/api/ratings', (req, res) => {
+  const { track, client, value } = req.body ?? {};
+  if (!isKey(track, 500) || !isKey(client, 100) || ![1, 0, -1].includes(value)) {
+    return res.status(400).json({ error: 'track, client and a value of 1, 0 or -1 are required' });
+  }
+  if (value === 0) deleteRating.run(track, client);
+  else upsertRating.run(track, client, value);
+  res.json(ratingSummary(track, client));
+});
+
+app.get('/api/health',(req, res) => {
   const { version } = db.prepare('SELECT sqlite_version() AS version').get();
   res.json({ status: 'ok', sqlite: version });
 });
