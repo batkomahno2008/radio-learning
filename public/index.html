@@ -62,8 +62,10 @@
     #state { margin: 16px 0 0; font-size: 0.875rem; line-height: 1.4; }
     #state.error { color: #A3271F; }
 
-    .rating { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 32px; }
-    .rating span { margin-right: 8px; }
+    .rating { display: flex; align-items: center; gap: 16px; margin-top: auto; padding-top: 32px; }
+    .rating-controls { flex: none; display: flex; align-items: center; gap: 4px; }
+    .count { min-width: 2ch; margin-right: 8px; font-size: 0.875rem; line-height: 1.4; font-variant-numeric: tabular-nums; }
+    .count:last-child { margin-right: 0; }
 
     .icon-btn {
       flex: none;
@@ -121,7 +123,13 @@
     .previous { flex: 1; background: var(--mint); padding: 48px 0; }
     .previous-inner { width: fit-content; min-width: min(336px, 100%); margin: 0 auto; }
     .previous ol { margin: 8px 0 0; padding: 0; list-style: none; }
+    .previous li { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+    .previous li > span { min-width: 0; overflow-wrap: anywhere; }
     .previous em { font-style: italic; }
+    .previous .icon-btn { width: 32px; height: 32px; }
+    .previous .icon-btn svg { width: 20px; height: 20px; }
+    /* Mint would vanish against the band's own mint background. */
+    .previous .icon-btn:hover:not(:disabled) { background: var(--white); }
 
     footer { background: var(--cream); color: var(--forest); padding: 16px 24px; text-align: center; font-size: 0.875rem; line-height: 1.4; }
 
@@ -160,14 +168,8 @@
           </p>
           <p id="state" role="status" hidden></p>
 
-          <div class="rating">
+          <div id="rating" class="rating">
             <span id="rating-label">Rate this track:</span>
-            <button id="rate-up" class="icon-btn" type="button" aria-label="Thumbs up" aria-describedby="rating-label" aria-pressed="false" disabled>
-              <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3zM7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3"/></svg>
-            </button>
-            <button id="rate-down" class="icon-btn" type="button" aria-label="Thumbs down" aria-describedby="rating-label" aria-pressed="false" disabled>
-              <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 15v4a3 3 0 003 3l4-9V2H5.72a2 2 0 00-2 1.7l-1.38 9a2 2 0 002 2.3zM17 2h3a2 2 0 012 2v7a2 2 0 01-2 2h-3"/></svg>
-            </button>
           </div>
 
           <div class="player" role="group" aria-label="Radio player">
@@ -203,6 +205,20 @@
 
   <footer>Ad-free. Data-free. Subscription-free.</footer>
 
+  <!-- Thumbs with their totals; cloned for the current track and each previous one. -->
+  <template id="rating-template">
+    <div class="rating-controls" role="group">
+      <button class="icon-btn" type="button" data-value="1" aria-pressed="false" disabled>
+        <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3zM7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3"/></svg>
+      </button>
+      <span class="count"></span>
+      <button class="icon-btn" type="button" data-value="-1" aria-pressed="false" disabled>
+        <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 15v4a3 3 0 003 3l4-9V2H5.72a2 2 0 00-2 1.7l-1.38 9a2 2 0 002 2.3zM17 2h3a2 2 0 012 2v7a2 2 0 01-2 2h-3"/></svg>
+      </button>
+      <span class="count"></span>
+    </div>
+  </template>
+
   <script src="/vendor/hls/hls.min.js"></script>
   <script>
     const audio = document.getElementById('audio');
@@ -213,7 +229,7 @@
     const stateEl = document.getElementById('state');
     const streamQualityEl = document.getElementById('stream-quality');
     const coverEl = document.getElementById('cover');
-    const rateBtns = { 1: document.getElementById('rate-up'), '-1': document.getElementById('rate-down') };
+    const ratingTemplate = document.getElementById('rating-template');
 
     const LOSSLESS = /flac|alac/i;
     const METADATA_INTERVAL_MS = 10000;
@@ -221,7 +237,11 @@
     let wantPlay = false;
     let metadataBase = null;
     let track = null;
-    let myRating = 0;
+    let previousShown = '';
+    // Track key -> { up, down, mine }, shared by every widget showing that track.
+    const ratings = new Map();
+    const voting = new Set();
+    let voteEpoch = 0;
 
     // Transient states show in the player; errors get their own line.
     function setState(text, isError = false) {
@@ -357,46 +377,88 @@
       }
     }
 
-    function showRating() {
-      for (const [value, btn] of Object.entries(rateBtns)) {
-        btn.setAttribute('aria-pressed', String(myRating === Number(value)));
-        btn.disabled = !track || !clientId();
+    function ratingWidget(key, name) {
+      const widget = ratingTemplate.content.firstElementChild.cloneNode(true);
+      widget.dataset.track = key || '';
+      for (const btn of widget.querySelectorAll('button')) {
+        const label = btn.dataset.value === '1' ? 'Thumbs up' : 'Thumbs down';
+        btn.setAttribute('aria-label', name ? `${label} for ${name}` : label);
+      }
+      return widget;
+    }
+
+    const nowRating = ratingWidget(null);
+    nowRating.setAttribute('aria-labelledby', 'rating-label');
+    document.getElementById('rating').append(nowRating);
+
+    function showRatings() {
+      const canRate = Boolean(clientId());
+      for (const widget of document.querySelectorAll('.rating-controls')) {
+        const key = widget.dataset.track;
+        const rating = ratings.get(key);
+        for (const btn of widget.querySelectorAll('button')) {
+          const value = Number(btn.dataset.value);
+          btn.setAttribute('aria-pressed', String(rating?.mine === value));
+          btn.disabled = !key || !canRate;
+          // Totals stay blank until the server has answered for this track.
+          btn.nextElementSibling.textContent = rating ? (value === 1 ? rating.up : rating.down) : '';
+        }
       }
     }
 
-    async function loadRating() {
-      const forTrack = track;
+    async function loadRatings() {
       const client = clientId();
-      myRating = 0;
-      showRating();
-      if (!client) return;
+      const keys = new Set([...document.querySelectorAll('.rating-controls')].map((w) => w.dataset.track).filter(Boolean));
+      showRatings();
+      if (!client || !keys.size) return;
+      const epoch = voteEpoch;
       try {
-        const res = await fetch(`/api/ratings?${new URLSearchParams({ track: forTrack, client })}`);
-        if (!res.ok || forTrack !== track) return;
-        myRating = (await res.json()).mine;
-        showRating();
+        const params = new URLSearchParams({ client });
+        for (const key of keys) params.append('track', key);
+        const res = await fetch(`/api/ratings?${params}`);
+        if (!res.ok) return;
+        const summaries = await res.json();
+        // A vote that overlapped this request makes its totals stale; the next poll catches up.
+        if (epoch !== voteEpoch) return;
+        for (const [key, summary] of Object.entries(summaries)) ratings.set(key, summary);
+        showRatings();
       } catch {}
     }
 
-    async function rate(value) {
-      const forTrack = track;
-      const previous = myRating;
+    async function rate(key, value) {
+      const client = clientId();
+      if (!key || !client || voting.has(key)) return;
+      const before = ratings.get(key) || { up: 0, down: 0, mine: 0 };
       // Pressing the selected thumb again clears the rating.
-      myRating = previous === value ? 0 : value;
-      showRating();
+      const mine = before.mine === value ? 0 : value;
+      ratings.set(key, {
+        up: before.up - (before.mine === 1) + (mine === 1),
+        down: before.down - (before.mine === -1) + (mine === -1),
+        mine,
+      });
+      voting.add(key);
+      voteEpoch++;
+      showRatings();
       try {
         const res = await fetch('/api/ratings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ track: forTrack, client: clientId(), value: myRating }),
+          body: JSON.stringify({ track: key, client, value: mine }),
         });
         if (!res.ok) throw new Error(res.statusText);
+        ratings.set(key, await res.json());
       } catch {
-        if (forTrack === track) { myRating = previous; showRating(); }
+        ratings.set(key, before);
       }
+      voting.delete(key);
+      voteEpoch++;
+      showRatings();
     }
-    rateBtns[1].addEventListener('click', () => rate(1));
-    rateBtns[-1].addEventListener('click', () => rate(-1));
+
+    document.querySelector('main').addEventListener('click', (event) => {
+      const btn = event.target.closest('.rating-controls button');
+      if (btn) rate(btn.parentElement.dataset.track, Number(btn.dataset.value));
+    });
 
     coverEl.addEventListener('load', () => { coverEl.hidden = false; });
     coverEl.addEventListener('error', () => { coverEl.hidden = true; });
@@ -408,22 +470,36 @@
       const source = [meta.bit_depth && `${meta.bit_depth}-bit`, meta.sample_rate && `${meta.sample_rate / 1000}kHz`].filter(Boolean).join(' ');
       setText('source-quality', source && `Source quality: ${source}`);
 
-      const rows = [];
+      const previous = [];
       for (let i = 1; meta[`prev_title_${i}`]; i++) {
-        const li = document.createElement('li');
-        const title = document.createElement('em');
-        title.textContent = meta[`prev_title_${i}`];
-        li.append(`${meta[`prev_artist_${i}`] || 'Unknown artist'}: `, title);
-        rows.push(li);
+        previous.push({ artist: meta[`prev_artist_${i}`], title: meta[`prev_title_${i}`] });
       }
-      document.getElementById('previous').replaceChildren(...rows);
+      // Rebuild only when the list changes, so polling never replaces a button mid-click.
+      const shown = JSON.stringify(previous);
+      if (shown !== previousShown) {
+        previousShown = shown;
+        const rows = previous.map(({ artist, title }) => {
+          const li = document.createElement('li');
+          const text = document.createElement('span');
+          const em = document.createElement('em');
+          em.textContent = title;
+          text.append(`${artist || 'Unknown artist'}: `, em);
+          li.append(text);
+          if (artist) li.append(ratingWidget(`${artist} - ${title}`, `${artist} - ${title}`));
+          return li;
+        });
+        document.getElementById('previous').replaceChildren(...rows);
+      }
 
       const key = meta.artist && meta.title ? `${meta.artist} - ${meta.title}` : null;
-      if (key === track) return;
-      track = key;
-      // The cover lives at a fixed URL, so vary the query to defeat the cache per track.
-      coverEl.src = `${metadataBase}cover.jpg?t=${encodeURIComponent(key || '')}`;
-      loadRating();
+      if (key !== track) {
+        track = key;
+        nowRating.dataset.track = key || '';
+        // The cover lives at a fixed URL, so vary the query to defeat the cache per track.
+        coverEl.src = `${metadataBase}cover.jpg?t=${encodeURIComponent(key || '')}`;
+      }
+      // Reload on every poll so totals from other listeners stay current.
+      loadRatings();
     }
 
     async function refreshMetadata() {
@@ -458,7 +534,6 @@
       setInterval(refreshMetadata, METADATA_INTERVAL_MS);
     }
 
-    showRating();
     init();
   </script>
 </body>

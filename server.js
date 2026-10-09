@@ -50,12 +50,16 @@ function ratingSummary(track, client) {
   return { ...ratingCounts.get(track), mine: ratingByClient.get(track, client)?.value ?? 0 };
 }
 
+const MAX_TRACKS = 20;
+
+// Accepts one or more track params and responds with a summary per track.
 app.get('/api/ratings', (req, res) => {
-  const { track, client } = req.query;
-  if (!isKey(track, 500) || !isKey(client, 100)) {
-    return res.status(400).json({ error: 'track and client are required' });
+  const { client } = req.query;
+  const tracks = [].concat(req.query.track ?? []);
+  if (!isKey(client, 100) || !tracks.length || tracks.length > MAX_TRACKS || !tracks.every((t) => isKey(t, 500))) {
+    return res.status(400).json({ error: `client and 1 to ${MAX_TRACKS} tracks are required` });
   }
-  res.json(ratingSummary(track, client));
+  res.json(Object.fromEntries(tracks.map((track) => [track, ratingSummary(track, client)])));
 });
 
 // value is 1 (up), -1 (down) or 0 (clear).
