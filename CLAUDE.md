@@ -102,7 +102,7 @@ in `pages/`, and the harness in `support/`.
   server, does not write its stream list and does not touch its database. So it can
   run against a local `npm start` or a staging deployment, through NGINX.
 - **Isolation:** each scenario gets a random 6-character token. The fake station adds
-  it to each title that it serves, for example `Got to Be Real ~a1b2c3`. Thus each
+  it to each title that it serves, for example `Got to Be Real ~a1b2c3`. So each
   scenario rates tracks that no other scenario or earlier run has rated, also on a
   shared database. Production code has no test hooks.
 - **On-air names:** `World.onAir(name)` maps a track name from a step to the name on
@@ -120,6 +120,8 @@ in `pages/`, and the harness in `support/`.
 - **Secure context:** the page uses `crypto.randomUUID()`, which needs a secure context.
   Chromium starts with `--unsafely-treat-insecure-origin-as-secure` for the `BASE_URL`
   origin, because staging uses plain HTTP on a host name that is not `localhost`.
+  The flag hides a known product limit (audit N7). #6 removes the flag and the
+  `channel: 'chromium'` line when it adds a fallback for the client id.
 - **No waiting for polls:** each browser context has Playwright's clock installed;
   `PlayerPage.pollStation()` fast-forwards 10 seconds to trigger the next metadata poll.
 - **Listeners:** steps name an actor ("Alice", "Bob"). `World.player(name)` lazily opens

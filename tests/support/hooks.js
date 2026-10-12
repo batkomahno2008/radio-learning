@@ -12,7 +12,9 @@ BeforeAll(async function () {
     // The page makes its client id with crypto.randomUUID(), which needs a secure
     // context. Staging uses plain HTTP on a host name that is not localhost, so
     // tell Chromium to treat the BASE_URL origin as secure. The headless shell
-    // ignores this flag, thus use the full Chromium in its new headless mode.
+    // ignores this flag, so use the full Chromium in its new headless mode.
+    // The flag hides a known product limit (audit N7). #6 removes the flag and the
+    // channel line when it adds a fallback for the client id.
     channel: 'chromium',
     args: [`--unsafely-treat-insecure-origin-as-secure=${app.origin}`],
   });
