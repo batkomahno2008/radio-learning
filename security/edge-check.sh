@@ -11,9 +11,17 @@
 # When GITHUB_STEP_SUMMARY is set, the script also writes a Markdown table to it.
 # Exit code: 0 when all checks pass, 1 when one or more checks fail, 2 for a usage error.
 #
+# Needs: Bash 4 or later (associative arrays), curl, awk, grep, sed. The default Bash of macOS
+# is 3.2. On macOS, install a newer Bash.
 # Run this script after the E2E suite. The 9.3 check causes 429 responses for some seconds.
+# The app must run behind NGINX: 9.1-api needs a 2xx answer from /api/health.
 
 set -uo pipefail
+
+if ((BASH_VERSINFO[0] < 4)); then
+  echo "$0: needs Bash 4 or later (this is Bash $BASH_VERSION)" >&2
+  exit 2
+fi
 
 BASE_URL="${1:-}"
 if [[ -z "$BASE_URL" ]]; then
@@ -55,6 +63,8 @@ header() { # header <name> <header-name>
 head -c 32768 /dev/zero | tr '\0' 'a' > "$TMP/big-body"
 
 # --- 9.1 and 9.6 on three types of response: a static file, an API response and an error response.
+# The static and API responses must be 2xx. A 502 (no app) must not pass, because then
+# the X-Powered-By check sees no answer from the app.
 declare -A PATHS=([static]="/" [api]="/api/health" [error]="/api/ratings")
 declare -A ARGS=([static]="" [api]="" [error]="-X POST -H Content-Type:application/json --data-binary @$TMP/big-body")
 for name in static api error; do
@@ -65,6 +75,10 @@ for name in static api error; do
   fi
 
   missing=()
+  status="$(cat "$TMP/$name.code")"
+  if [[ "$name" != error && ! "$status" =~ ^2[0-9][0-9]$ ]]; then
+    missing+=("status $status (expected 2xx)")
+  fi
   [[ "$(header "$name" x-content-type-options)" == "nosniff" ]] || missing+=("X-Content-Type-Options")
   [[ "$(header "$name" x-frame-options)" == "DENY" ]] || missing+=("X-Frame-Options")
   case "$(header "$name" referrer-policy)" in
@@ -153,12 +167,24 @@ if [[ "$code" == "413" ]]; then
 else
   record FAIL "9.4" "POST /api/ratings with 32 KiB got $code, expected 413"
 fi
+# The limit is 16 KiB. One byte more must also get 413.
+head -c 16385 /dev/zero | tr '\0' 'a' > "$TMP/limit-body"
+code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 -X POST \
+  -H 'Content-Type: application/json' --data-binary @"$TMP/limit-body" "$BASE_URL/api/ratings")"
+if [[ "$code" == "413" ]]; then
+  record PASS "9.4-limit" "POST /api/ratings with 16 KiB + 1 byte got 413"
+else
+  record FAIL "9.4-limit" "POST /api/ratings with 16 KiB + 1 byte got $code, expected 413"
+fi
 
 # --- 9.3 Rate limits: more requests than the limit must get at least one 429.
+# Each request has a different false X-Forwarded-For. NGINX must ignore it (threat T6),
+# so all requests have the same client IP and the limit applies.
 burst() { # burst <count> <curl args...>; prints the count of 429 responses
   local n="$1"; shift
-  for _ in $(seq 1 "$n"); do
-    curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 "$@" &
+  for i in $(seq 1 "$n"); do
+    curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 \
+      -H "X-Forwarded-For: 203.0.113.$((i % 250 + 1))" "$@" &
   done | grep -c '^429$'
   wait
 }
@@ -167,15 +193,15 @@ if [[ "${SKIP_RATE_LIMIT:-0}" == "1" ]]; then
 else
   n429="$(burst 40 -X POST -H 'Content-Type: application/json' --data '{}' "$BASE_URL/api/ratings")"
   if ((n429 > 0)); then
-    record PASS "9.3-ratings" "40 parallel POST /api/ratings got $n429 x 429"
+    record PASS "9.3-ratings" "40 parallel POST /api/ratings (each with a false X-Forwarded-For) got $n429 x 429"
   else
-    record FAIL "9.3-ratings" "40 parallel POST /api/ratings got no 429"
+    record FAIL "9.3-ratings" "40 parallel POST /api/ratings (each with a false X-Forwarded-For) got no 429"
   fi
   n429="$(burst 120 "$BASE_URL/api/streams")"
   if ((n429 > 0)); then
-    record PASS "9.3-api" "120 parallel GET /api/streams got $n429 x 429"
+    record PASS "9.3-api" "120 parallel GET /api/streams (each with a false X-Forwarded-For) got $n429 x 429"
   else
-    record FAIL "9.3-api" "120 parallel GET /api/streams got no 429"
+    record FAIL "9.3-api" "120 parallel GET /api/streams (each with a false X-Forwarded-For) got no 429"
   fi
 fi
 
