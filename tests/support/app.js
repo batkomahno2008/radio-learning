@@ -1,74 +1,57 @@
-const { spawn } = require('node:child_process');
 const fs = require('node:fs');
-const net = require('node:net');
-const os = require('node:os');
 const path = require('node:path');
-const Database = require('better-sqlite3');
+const Station = require('./station');
 
 const root = path.join(__dirname, '..', '..');
 
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const probe = net.createServer();
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', () => {
-      const { port } = probe.address();
-      probe.close(() => resolve(port));
-    });
-  });
+// The first stream in a stream list file, in the format that server.js reads:
+// a bare URL or "Name | URL" on each line, with # for comments.
+function firstStream(file) {
+  for (const raw of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const url = line.slice(line.indexOf('|') + 1).trim();
+    if (/^https?:\/\//i.test(url)) return url;
+  }
+  throw new Error(`${file} lists no stream URL`);
 }
 
-// Runs server.js on a free port with its own database and stream list, so a
-// test run never reads or writes data/dev.db or stream_URL.txt.
+// The app under test: a server that already runs at BASE_URL. On staging this is
+// the NGINX entry point. The suite does not start the server and does not touch
+// its database; unique track names keep the scenarios apart (see World.onAir).
 class App {
-  async start() {
-    this.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'radio-learning-e2e-'));
-    this.dbPath = path.join(this.dir, 'test.db');
-    this.streamsFile = path.join(this.dir, 'streams.txt');
-    fs.writeFileSync(this.streamsFile, '');
-    const port = await freePort();
-    this.url = `http://localhost:${port}/`;
-
-    this.server = spawn(process.execPath, ['server.js'], {
-      cwd: root,
-      env: { ...process.env, PORT: String(port), DB_PATH: this.dbPath, STREAMS_FILE: this.streamsFile },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    await new Promise((resolve, reject) => {
-      let output = '';
-      const onData = (chunk) => {
-        output += chunk;
-        if (output.includes('Listening')) resolve();
-      };
-      this.server.stdout.on('data', onData);
-      this.server.stderr.on('data', onData);
-      this.server.once('error', reject);
-      this.server.once('exit', (code) => reject(new Error(`server.js exited with code ${code}\n${output}`)));
-    });
-    this.db = new Database(this.dbPath);
+  constructor() {
+    this.url = new URL(process.env.BASE_URL || 'http://localhost:3000/').href;
+    this.origin = new URL(this.url).origin;
+    this.checked = null;
   }
 
-  // The server reads the stream list on every request, so this applies on the next page load.
-  useStream(url) {
-    fs.writeFileSync(this.streamsFile, `${url}\n`);
+  // @live scenarios play this stream, whatever the server lists.
+  get liveStreamUrl() {
+    return process.env.LIVE_STREAM_URL || firstStream(path.join(root, 'stream_URL.txt'));
   }
 
-  useRealStream() {
-    fs.copyFileSync(path.join(root, 'stream_URL.txt'), this.streamsFile);
-  }
-
-  clearRatings() {
-    this.db.exec('DELETE FROM ratings');
-  }
-
-  async stop() {
-    this.db?.close();
-    if (this.server && this.server.exitCode === null) {
-      const exited = new Promise((resolve) => this.server.once('exit', resolve));
-      this.server.kill();
-      await exited;
-    }
-    if (this.dir) fs.rmSync(this.dir, { recursive: true, force: true });
+  // The deterministic scenarios play the fake station, so the server must list it
+  // first. Checked once per run, to give a clear message instead of failed steps.
+  expectStationStream() {
+    this.checked ??= (async () => {
+      const streamsUrl = new URL('api/streams', this.url);
+      let streams;
+      try {
+        const res = await fetch(streamsUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        streams = await res.json();
+      } catch (err) {
+        throw new Error(`Cannot get ${streamsUrl} (${err.message}). Start the app or set BASE_URL.`);
+      }
+      if (streams[0]?.url !== Station.STREAM_URL) {
+        throw new Error(
+          `The app at ${this.url} must list ${Station.STREAM_URL} as its first stream ` +
+            `(STREAMS_FILE). It lists: ${JSON.stringify(streams.map((s) => s.url))}`
+        );
+      }
+    })();
+    return this.checked;
   }
 }
 

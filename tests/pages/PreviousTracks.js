@@ -2,6 +2,7 @@ const { expect } = require('@playwright/test');
 const RatingWidget = require('./RatingWidget');
 
 // The "Previous tracks" list; rows are addressed by "Artist - Title".
+// All names and row texts are on-air names, with the token (see World.onAir).
 class PreviousTracks {
   constructor(page) {
     this.page = page;

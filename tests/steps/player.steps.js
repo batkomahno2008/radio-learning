@@ -34,7 +34,7 @@ Then('{listener} sees the artist {string}', async function (name, artist) {
 });
 
 Then('{listener} sees the title {string}', async function (name, title) {
-  await expect((await this.player(name)).title).toHaveText(title);
+  await expect((await this.player(name)).title).toHaveText(this.onAir(title));
 });
 
 Then('{listener} sees the album {string}', async function (name, album) {

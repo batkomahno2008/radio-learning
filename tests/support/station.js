@@ -25,9 +25,17 @@ class Station {
   static ORIGIN = 'https://station.test';
   static STREAM_URL = `${Station.ORIGIN}/hls/live.m3u8`;
 
-  constructor() {
+  // The station adds the scenario token to each title that it serves, so no other
+  // scenario or earlier run has rated the tracks of this scenario.
+  constructor(token) {
+    this.token = token;
+    // Tracks keep the names from the steps; metadata() adds the token.
     this.current = null;
     this.previous = [];
+  }
+
+  withToken(text) {
+    return `${text} ~${this.token}`;
   }
 
   // Starts a new song; the one that was playing moves to the top of the history.
@@ -41,18 +49,20 @@ class Station {
   }
 
   metadata() {
-    const meta = { ...baseMetadata, ...this.current };
+    const meta = { ...baseMetadata };
+    if (this.current) Object.assign(meta, { artist: this.current.artist, title: this.withToken(this.current.title) });
     this.previous.forEach(({ artist, title }, i) => {
       meta[`prev_artist_${i + 1}`] = artist;
-      meta[`prev_title_${i + 1}`] = title;
+      meta[`prev_title_${i + 1}`] = this.withToken(title);
     });
     return meta;
   }
 
-  async attach(context) {
+  // appOrigin is the origin of the app under test. Only requests to that origin go to the network.
+  async attach(context, appOrigin) {
     // Anything else off-site (web fonts) gets an empty answer rather than a network call.
     await context.route(
-      (url) => !['localhost', '127.0.0.1'].includes(url.hostname),
+      (url) => url.origin !== appOrigin,
       (route) => route.fulfill({ status: 200, contentType: 'text/css', body: '' })
     );
     await context.route(`${Station.ORIGIN}/**`, (route) => this.serve(route));

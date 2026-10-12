@@ -23,9 +23,10 @@ Then('{listener} has no thumb selected for {track}', async function (name, track
   await (await this.rating(name, track)).expectSelection(0);
 });
 
-Then('the ratings API reports {int} up and {int} down for {string}', async function (up, down, track) {
+Then('the ratings API reports {int} up and {int} down for {string}', async function (up, down, name) {
+  const track = this.onAir(name);
   const params = new URLSearchParams({ client: 'api-check', track });
-  const res = await fetch(`${this.app.url}api/ratings?${params}`);
+  const res = await fetch(new URL(`api/ratings?${params}`, this.app.url));
   expect(res.status).toBe(200);
   expect(await res.json()).toEqual({ [track]: { up, down, mine: 0 } });
 });

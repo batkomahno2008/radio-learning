@@ -22,10 +22,11 @@ When('{listener} reloads the page', async function (name) {
 
 When('the station starts playing {string}', async function (track) {
   this.station.play(track);
+  const { artist, title } = this.station.current;
   // Every open player picks the new song up on its next poll.
   for (const player of this.listeners.values()) {
     await player.pollStation();
-    await player.expectNowPlaying(this.station.current);
+    await player.expectNowPlaying({ artist, title: this.onAir(title) });
   }
 });
 
