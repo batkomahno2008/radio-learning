@@ -45,27 +45,31 @@ The pipeline must scan each target in this table. Each row has a fail rule in se
 | ID | The scan fails when | The scan passes when |
 |---|---|---|
 | S1 | One or more CRITICAL or HIGH findings have a fix available. | The count of such findings is 0. |
-| S2 | One or more CRITICAL or HIGH findings in the `runtime` or `proxy` image have a fix available. | The count of such findings is 0. Findings in the `e2e` image are reported only, because that image is not published. |
+| S2 | One or more CRITICAL or HIGH findings in the `runtime` or `proxy` image have a fix available. | The count of such findings is 0. The scan reports findings in the `e2e` image only. The pipeline does not publish that image. |
 | S3 | One or more CRITICAL or HIGH misconfiguration findings occur, or a check of section 7 or 8.2 fails. | The count of such findings is 0. |
 | S4 | One or more CRITICAL or HIGH misconfiguration findings occur, or a check of section 7 fails. | The count of such findings is 0. |
 | S5 | One or more CRITICAL or HIGH misconfiguration findings occur, or a check of section 7 fails. | The count of such findings is 0. |
-| S6 | One or more CRITICAL or HIGH misconfiguration findings occur, or a check of section 9 fails in the config. | The count of such findings is 0. |
+| S6 | One or more CRITICAL or HIGH misconfiguration findings occur, or a check of section 9 fails in the config. The TLS checks of 9.5 are part of S6. | The count of such findings is 0. |
 | S7 | The scan finds one or more secrets. All severities count. | The count of secrets is 0. |
 | S8 | One or more CRITICAL or HIGH findings occur. If the scanner gives a SARIF `security-severity`, a value of 7.0 or more is HIGH. | The count of such findings is 0. |
 | S9 | One or more CRITICAL or HIGH findings occur, or a check of section 8.1 fails. | The count of such findings is 0. |
-| S10 | One or more checks of section 9 fail on the running stack. | All checks of section 9 pass. |
+| S10 | One or more checks of 9.1, 9.2, 9.3, 9.4 or 9.6 fail on the running stack. | All these checks pass. |
 | S11 | One or more checks of section 8 fail. | All checks of section 8 pass. |
 
 For S3 to S9, "fix available" does not apply. A change to the file or the code is always possible.
 
+The staging stacks use plain HTTP (D14). S10 runs the checks of 9.1 to 9.4 and 9.6 on them. S10 does not run the TLS checks of 9.5. S6 examines the TLS config.
+
 ### 3.3 Special rule for secrets
 
-A secret that gets into the Git history is compromised, also after you remove the commit.
+An attacker can use a secret that gets into the Git history, also after you remove the commit.
 If S7 finds a real secret, do these steps in the same day:
 
 1. Revoke or rotate the secret.
-2. Record the incident on the issue tracker with the label `security`.
-3. Add an exception for the old commit only after step 1 is complete.
+2. Record the incident in a private security advisory of the repository. The repository is public, so do not use a public issue.
+3. Add an exception for the old commit only after step 1 is complete (see 5.1).
+
+A public issue or a public comment must not hold a secret value or the details of an exploit.
 
 ## 4. Rollout mode
 
@@ -78,6 +82,7 @@ The gate has two modes.
 
 - The gate starts in `report` mode.
 - Issue #13 changes the gate to `enforce` mode after the remediation.
+- A required status check on `main` needs admin access to the repository. Issue #13 must ask the user to set it.
 - Keep the mode in one setting in the repository, so that one change switches all scans.
 - Do not publish a release tag (`vX.Y.Z`) while the gate is in `report` mode.
 
@@ -90,7 +95,11 @@ An exception lets a known finding stay open for a limited time.
 - Keep the exceptions for each tool in one file in the repository. Issue #4 sets the file name and the format.
 - Each exception must have all fields of the table in 5.2. The scan must ignore an exception that has a missing field.
 - An exception applies to one finding ID in one target. Do not use wildcards.
-- The maximum time to expiry is 90 days for HIGH and 30 days for CRITICAL.
+- Use these maximum times to expiry:
+  - CRITICAL finding: 30 days.
+  - HIGH finding: 90 days.
+  - Finding with no severity, or a failed check of section 7, 8 or 9: 90 days.
+  - Secret that you revoked or rotated (3.3): no expiry. Write `never` in `expires`. Write the revocation date in `reason`.
 - After the expiry date, the finding is a gate violation again. Extend an exception only with a new review.
 - The Security Specialist (`role:security`) approves each new exception in the pull request review.
 
@@ -103,7 +112,7 @@ An exception lets a known finding stay open for a limited time.
 | `target` | `S2 runtime image` | One target from section 2. |
 | `reason` | No fix is available upstream. The vulnerable function is not used. | Tell why the risk is acceptable. |
 | `owner` | `@batkomahno2008` | A person or a role label. The owner removes the exception when a fix is available. |
-| `expires` | `2026-12-31` | ISO 8601 date. Section 5.1 gives the maximum. |
+| `expires` | `2026-12-31` | ISO 8601 date, or `never` for a revoked secret only. Section 5.1 gives the maximum. |
 
 ## 6. Reporting
 
@@ -130,7 +139,13 @@ These rules apply to each container in Compose and in Kubernetes. The S3, S4 and
 | R9 | Do not put a secret in an image, in a manifest or in a Compose file. | Use a `Secret`. | Use an env file or a secret file that is not in Git. |
 | R10 | Do not run privileged containers or use host namespaces. | No `privileged`, `hostNetwork`, `hostPID`, `hostIPC` or `hostPath` | No `privileged`, `network_mode: host` or `pid: host` |
 
-Some images cannot obey a rule. For example, Postgres must write to its data directory. Add an exception with the reason for each such case.
+For R2, mount writable volumes only for these paths:
+
+- Postgres: the data directory (a persistent volume), `/var/run/postgresql` and `/tmp`.
+- NGINX: `/tmp` and `/etc/nginx/conf.d`. The template step writes the config to `/etc/nginx/conf.d` at start.
+- App: `/tmp`, if the app must write.
+
+If a container cannot obey a rule, add an exception with the reason (section 5).
 
 ## 8. Supply chain
 
@@ -171,9 +186,11 @@ Each response from NGINX must have these headers, also error responses (use `alw
 | `Referrer-Policy` | `strict-origin-when-cross-origin` or stricter |
 | `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=(), usb=()` as a minimum |
 | `Cross-Origin-Opener-Policy` | `same-origin` |
-| `Strict-Transport-Security` | `max-age=31536000` or more, on HTTPS responses |
+| `Strict-Transport-Security` | `max-age=31536000` or more, on each response (HTTP and HTTPS) |
 
 The responses must not have the `X-Powered-By` header. NGINX must remove it from the app responses.
+
+NGINX sends `Strict-Transport-Security` on each response, also on plain HTTP. Browsers ignore this header over HTTP, so it causes no problem. Thus #16 owns HSTS in Compose and in Kubernetes. In Kubernetes, the cluster edge must not remove the header. The deployment guide (#12) must tell this.
 
 ### 9.2 Content Security Policy
 
@@ -183,8 +200,8 @@ The CSP must have these directives as a minimum. `STATION_ORIGINS` is the NGINX 
 |---|---|
 | `default-src` | `'self'` |
 | `script-src` | `'self'` |
-| `style-src` | `'self'` and the font style sheet origin (see "Decision for the user" in section 11) |
-| `font-src` | `'self'` and the font file origin (see section 11) |
+| `style-src` | `'self'` and `https://fonts.googleapis.com` (see decision U1 in section 11) |
+| `font-src` | `'self'` and `https://fonts.gstatic.com` (see decision U1) |
 | `img-src` | `'self'`, `data:` and `STATION_ORIGINS` |
 | `media-src` | `'self'`, `blob:` and `STATION_ORIGINS` |
 | `connect-src` | `'self'` and `STATION_ORIGINS` |
@@ -198,7 +215,7 @@ The check fails when one of these conditions occurs:
 
 - `script-src` (or `default-src` when `script-src` is missing) has `'unsafe-inline'`, `'unsafe-eval'`, `data:`, `blob:`, `*` or `http:`.
 - A directive in the table is missing.
-- A browser logs a CSP violation during the staging E2E run (the clean-console rule).
+- A browser logs a CSP violation during the staging E2E run, in a scenario that is not `@live` (the clean-console rule).
 
 Add `upgrade-insecure-requests` only when the site uses HTTPS. On plain HTTP staging, it stops same-origin requests.
 
@@ -212,7 +229,9 @@ Use the client IP as the key. Set the real client IP from `X-Forwarded-For` only
 | Other `/api/*` | 20 requests each second, burst 40 | `429` |
 | All locations | 20 open connections | `429` |
 
-Make the values configurable. The S10 check sends more requests than the limit and expects at least one `429`.
+Keep the values in one place in the NGINX config template. Do not add an NGINX environment variable for them. A new variable changes the shared contracts (epic rule 10).
+
+The S10 check sends more requests than the limit and expects at least one `429`. Run this check after the E2E suite is complete. Then a `429` cannot fail an E2E scenario through the clean-console rule.
 
 ### 9.4 Body size
 
@@ -226,6 +245,7 @@ These rules apply where NGINX stops TLS (Compose, D14).
 - Accept TLS 1.2 and TLS 1.3 only. A TLS 1.0 or TLS 1.1 handshake must fail.
 - For TLS 1.2, use only ECDHE key exchange with AEAD ciphers (AES-GCM or ChaCha20-Poly1305).
 - Keep the private key out of Git and out of images. Give the key file mode `0600` or `0640`, and only the NGINX user can read it.
+- Certificate tools usually write the private key with owner `root` and mode `0600`. The unprivileged NGINX user cannot read such a file. The deployment guide (#12) must tell the operator to give the key file to the NGINX user or group.
 - Send HTTP on port 8080 to HTTPS with a `301` redirect, except `/healthz`.
 
 In Kubernetes, the cluster edge stops TLS (D11). The operator must apply the same TLS minimum at the edge. The deployment guide (#12) must tell this.
@@ -241,7 +261,7 @@ In Kubernetes, the cluster edge stops TLS (D11). The operator must apply the sam
 |---|---|---|
 | Each pull request into `main` | S1 to S11 | Mode of section 4. |
 | Each push to `main` | S1 to S11 | Mode of section 4. |
-| Each night | S1, S2, S7 and S11 against the latest published images (`main` and `latest` tags) | Report only. A new gate violation opens an issue with the label `security`. |
+| Each night | S1, S2, S7 and S11 against the latest published images (`main` and `latest` tags) | Report only. A new gate violation opens an issue with the label `security`. The issue holds only the finding ID, the target and the severity. |
 
 New vulnerabilities appear after a release, so the night scan must use the published images and not a new build.
 
@@ -251,10 +271,10 @@ These decisions have a default in this policy. The user can change them.
 
 | ID | Decision | Default in this policy |
 |---|---|---|
-| U1 | The page loads web fonts from a third-party host today. | The CSP allows the two font origins for v1.0.0. This is an accepted risk (threat T12). Self-hosting the fonts removes the risk and the two origins. |
+| U1 | The page loads web fonts from a third-party host today. | The CSP allows `https://fonts.googleapis.com` and `https://fonts.gstatic.com` for v1.0.0. This is an accepted risk (threat T12). Self-hosting the fonts removes the risk and the two origins. |
 | U2 | Severity threshold of the gate. | CRITICAL and HIGH with a fix available (the recommendation of #3). |
 | U3 | Maximum time to expiry of an exception. | 90 days for HIGH, 30 days for CRITICAL. |
-| U4 | Rate limit values. | The values of section 9.3. |
+| U4 | Rate limit values. | The values of section 9.3, in one place in the NGINX config template. |
 
 ## 12. Threat list
 
@@ -269,6 +289,6 @@ These decisions have a default in this policy. The user can change them.
 | T7 | An attacker connects to the app or to Postgres directly. | The attacker gets around the edge controls or reads the database. | Only NGINX is reachable from outside. NetworkPolicy in Kubernetes. No `ports:` for the app and Postgres in Compose (R8). | #8, #9 |
 | T8 | An attacker gets code execution in a container and tries to get control of the host. | Control of the node or the Compose host. | Run-time baseline R1 to R6 and R10. | #8, #9 |
 | T9 | A secret (Postgres password, TLS private key, registry token) gets into Git, an image or a log. | An attacker gets access to the database, the domain or the registry. | S7 scan of the history and the images. Secrets only in a `Secret` or a mounted file (R9). Key file mode (9.5). Secret incident steps (3.3). | #8, #9, #11, #12 |
-| T10 | A third-party action, a base image or an npm package is replaced with malicious code. | Malicious code runs in CI or in production. Published images are changed. | SHA pins, digest pins, `npm ci`, minimal workflow permissions, SBOM and provenance (section 8). S9 scan. | #8, #10, #11 |
-| T11 | A network attacker reads or changes the traffic, or a different site shows the page in a frame. | The attacker changes the page or tricks the listener into clicks. | TLS 1.2 or higher and HSTS (9.5, 9.1). `frame-ancestors 'none'` and `X-Frame-Options: DENY`. | #16, #12 |
+| T10 | An attacker replaces a third-party action, a base image or an npm package with malicious code. | Malicious code runs in CI or in production. The attacker changes the published images. | SHA pins, digest pins, `npm ci`, minimal workflow permissions, SBOM and provenance (section 8). S9 scan. | #8, #10, #11 |
+| T11 | A network attacker reads or changes the traffic, or a different site shows the page in a frame. | The attacker changes the page or tricks the listener into clicks. | TLS 1.2 or higher (9.5). HSTS from NGINX on each response, and the cluster edge keeps the header (9.1). `frame-ancestors 'none'` and `X-Frame-Options: DENY`. | #16, #12 |
 | T12 | The third-party font host receives the IP address of each listener and can change the font style sheet. | Loss of privacy. A changed style sheet can change the look of the page, but it cannot run script. | Accepted risk for v1.0.0 (decision U1). The CSP allows only the two font origins for styles and fonts, and no third-party script. | #16 |
