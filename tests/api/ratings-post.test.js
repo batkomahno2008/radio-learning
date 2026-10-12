@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { afterEach, beforeEach, describe, it } = require('node:test');
+const request = require('supertest');
 const { captureErrors, createTestApp } = require('./helpers');
 
 const TRACK = 'Artist - Title';
@@ -51,6 +52,17 @@ describe('POST /api/ratings', () => {
       assert.equal(rows[0].n, 0);
     });
 
+    it('clears only the track that the request names and keeps the other ratings of the client', async () => {
+      await post({ track: 'One - A', client: 'alice', value: 1 }).expect(200);
+      await post({ track: 'Two - B', client: 'alice', value: -1 }).expect(200);
+      const res = await post({ track: 'One - A', client: 'alice', value: 0 }).expect(200);
+      assert.deepEqual(res.body, { up: 0, down: 0, mine: 0 });
+      // The other track keeps its summary and its row.
+      assert.deepEqual(await summary('alice', 'Two - B'), { up: 0, down: 1, mine: -1 });
+      const { rows } = await env.pool.query('SELECT track, client, value FROM ratings');
+      assert.deepEqual(rows, [{ track: 'Two - B', client: 'alice', value: -1 }]);
+    });
+
     it('accepts a clear when the client has no rating', async () => {
       const res = await post({ track: TRACK, client: 'alice', value: 0 }).expect(200);
       assert.deepEqual(res.body, { up: 0, down: 0, mine: 0 });
@@ -99,7 +111,13 @@ describe('POST /api/ratings', () => {
 
     it('counts all votes when requests come at the same time', async () => {
       const clients = Array.from({ length: 10 }, (_, i) => `client-${i}`);
-      await Promise.all(clients.map((client, i) => post({ track: TRACK, client, value: i % 2 ? -1 : 1 }).expect(200)));
+      // A new supertest client for each request. One shared client gives one server for
+      // all requests, and Node then warns about too many "close" listeners.
+      await Promise.all(
+        clients.map((client, i) =>
+          request(env.app).post('/api/ratings').send({ track: TRACK, client, value: i % 2 ? -1 : 1 }).expect(200)
+        )
+      );
       assert.deepEqual(await summary('client-0'), { up: 5, down: 5, mine: 1 });
     });
   });

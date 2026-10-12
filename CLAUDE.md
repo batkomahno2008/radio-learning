@@ -175,7 +175,8 @@ server and no Postgres.
 - The runner starts each file in its own process. Each test makes its own database, so
   files and tests share no state. `supertest` uses a free port, so no test uses a fixed port.
 - `npm run test:api` uses a glob (`"tests/api/*.test.js"`), not the directory `tests/api/`.
-  Node 22 treats a directory argument as a file name and fails. `helpers.js` is not a test file.
+  Node 22 and Node 24 (24.21.0, the `.nvmrc` version) both fail with the directory form
+  (`Cannot find module '.../tests/api'`). Do not put it back. `helpers.js` is not a test file.
 - The script fails when line coverage is below 80%. Coverage counts `app.js`,
   `config.js` and `db.js` only (`--test-coverage-include`). `server.js` starts a server
   when `require` loads it, so the E2E tests cover it. Add each new app file to the script.

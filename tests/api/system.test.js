@@ -124,8 +124,12 @@ describe('system endpoints', () => {
         await api.post('/api/ratings').send({}),
       ];
       pool.query = brokenPool().query;
-      answers.push(await captureErrors(() => api.get('/api/ratings').query({ client: 'a', track: 'b' })).then(() => null));
-      for (const res of answers.filter(Boolean)) {
+      // The last answer is a 500 from a failing pool.
+      await captureErrors(async () => {
+        answers.push(await api.get('/api/ratings').query({ client: 'a', track: 'b' }).expect(500));
+      });
+      assert.equal(answers.length, 7);
+      for (const res of answers) {
         assert.equal(res.headers['x-powered-by'], undefined, res.req.path);
       }
     });
