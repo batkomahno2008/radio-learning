@@ -1,0 +1,9 @@
+# Test data for the Trivy checks (issue #4). Not a real Compose file.
+# Override file. Alone, it is not a full service, so a scan of this file alone gives false
+# results. The test renders it with compose.yaml first (docker compose config). Expected: 0.
+services:
+  proxy:
+    ports: ["8443:8443"]
+    volumes:
+      - ./tls/tls.conf:/etc/nginx/tls/tls.conf:ro
+      - ./certs:/etc/nginx/certs:ro

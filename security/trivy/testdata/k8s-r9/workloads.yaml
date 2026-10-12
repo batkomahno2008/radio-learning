@@ -1,0 +1,50 @@
+# Test data for the Trivy checks (issue #4). Not a real manifest.
+# Rule R9 (RL-KS-003). The values are not real secrets.
+# Expected: 2 results for RL-KS-003, both in container 'bad'. All other checks pass.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: postgres, namespace: radio-learning }
+spec:
+  serviceName: postgres
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: bad
+          image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+          imagePullPolicy: Always
+          env:
+            - name: POSTGRES_PASSWORD
+              value: example-only
+            - name: DATABASE_URL
+              value: postgres://app:example-only@postgres:5432/app
+          securityContext: &hardened
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+          resources: &limits
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+        - name: good
+          image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+          imagePullPolicy: Always
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: postgres, key: password } }
+            - name: POSTGRES_PASSWORD_FILE
+              value: /run/secrets/password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          securityContext: *hardened
+          resources: *limits

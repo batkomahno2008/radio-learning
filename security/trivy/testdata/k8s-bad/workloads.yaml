@@ -1,0 +1,38 @@
+# Test data for the Trivy checks (issue #4). Not a real manifest. It has known faults
+# for policy rules R1 to R7, R10 and section 8.2.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: radio-learning }
+spec:
+  selector: { matchLabels: { app: radio-learning } }
+  template:
+    metadata: { labels: { app: radio-learning } }
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/batkomahno2008/radio-learning:main
+        - name: sidecar
+          image: busybox:1.37
+          securityContext: { privileged: true }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: backup, namespace: radio-learning }
+spec:
+  schedule: "0 3 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          hostNetwork: true
+          hostPID: true
+          hostIPC: true
+          restartPolicy: OnFailure
+          volumes:
+            - name: host
+              hostPath: { path: /var/lib }
+          containers:
+            - name: dump
+              image: postgres:18-alpine
+              securityContext: { runAsUser: 0 }
+              volumeMounts: [{ name: host, mountPath: /host }]

@@ -1,0 +1,19 @@
+# Test data for the Trivy checks (issue #4). Not a real Compose file.
+# It has known faults for each rule RL-DC-001 to RL-DC-010. The values are not real secrets.
+services:
+  proxy:
+    image: nginxinc/nginx-unprivileged:stable-alpine
+    ports: ["8080:8080"]
+  app:
+    image: ghcr.io/batkomahno2008/radio-learning:main
+    ports: ["3000:3000"]
+    privileged: true
+    cap_add: [NET_ADMIN]
+    security_opt: ["seccomp:unconfined"]
+    environment:
+      DATABASE_URL: postgres://app:${POSTGRES_PASSWORD}@db:5432/app
+  db:
+    image: postgres:18-alpine
+    network_mode: host
+    environment:
+      - POSTGRES_PASSWORD=example-only

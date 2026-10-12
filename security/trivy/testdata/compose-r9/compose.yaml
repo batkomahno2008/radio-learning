@@ -1,0 +1,29 @@
+# Test data for the Trivy checks (issue #4). Not a real Compose file.
+# Rule R9 (RL-DC-008) only. All other rules pass. The values are not real secrets.
+# Expected: 2 results, both in service 'bad'.
+x-hardening: &hardening
+  image: ghcr.io/batkomahno2008/radio-learning:main
+  user: "10001"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  deploy:
+    resources:
+      limits: { cpus: "0.50", memory: 128M }
+
+services:
+  bad:
+    <<: *hardening
+    environment:
+      # A URL with a literal password: RL-DC-008.
+      DATABASE_URL: postgres://app:example-only@db:5432/app
+      # A secret name with a literal value: RL-DC-008.
+      API_TOKEN: example-only
+  good:
+    <<: *hardening
+    environment:
+      DATABASE_URL: postgres://app:${POSTGRES_PASSWORD}@db:5432/app
+      READ_ONLY_URL: https://user@example.test/path
+      API_TOKEN: ${API_TOKEN:-}
+      API_TOKEN_FILE: /run/secrets/api-token
+      EMPTY_PASSWORD: ""

@@ -1,0 +1,43 @@
+# Test data for the Trivy checks (issue #4). Not a real manifest.
+# It obeys policy sections 7 and 8.2. Only KSV-0125 (trusted registries, MEDIUM, report only) fails.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: radio-learning, namespace: radio-learning }
+spec:
+  selector: { matchLabels: { app: radio-learning } }
+  template:
+    metadata: { labels: { app: radio-learning } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: app
+          image: ghcr.io/batkomahno2008/radio-learning:main
+          imagePullPolicy: Always
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: radio-learning-db, key: url } }
+            - name: PORT
+              value: "3000"
+          securityContext: &hardened
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+        - name: db-wait
+          image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+          imagePullPolicy: Always
+          securityContext: *hardened
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 50m, memory: 32Mi }

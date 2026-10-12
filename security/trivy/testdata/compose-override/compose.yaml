@@ -1,0 +1,14 @@
+# Test data for the Trivy checks (issue #4). Not a real Compose file.
+# Base file of a stack with an override file. It obeys policy sections 7 and 8.2.
+services:
+  proxy:
+    image: ghcr.io/batkomahno2008/radio-learning-proxy:main
+    user: "101"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits: { cpus: "0.50", memory: 128M }
+    ports: ["8080:8080"]
+    tmpfs: [/tmp]
