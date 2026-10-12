@@ -112,7 +112,7 @@ describe('POST /api/ratings', () => {
     it('counts all votes when requests come at the same time', async () => {
       const clients = Array.from({ length: 10 }, (_, i) => `client-${i}`);
       // A new supertest client for each request. One shared client gives one server for
-      // all requests, and Node then warns about too many "close" listeners.
+      // all requests, and Node then warns about too many "listening" and "error" listeners.
       await Promise.all(
         clients.map((client, i) =>
           request(env.app).post('/api/ratings').send({ track: TRACK, client, value: i % 2 ? -1 : 1 }).expect(200)
