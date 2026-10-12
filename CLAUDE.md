@@ -91,7 +91,7 @@ serves the static files and sends `/api/*` to the app (epic #1, decision D12).
   `HOST:PORT`. It logs `Listening on ...`. A signal before `Listening on` closes the
   pool and exits 0. A signal after it stops new connections, lets open requests finish,
   closes the pool and exits 0. After 10 s, it exits 1. The keep-alive timeout (65 s)
-  is longer than the NGINX upstream idle time (60 s).
+  is longer than the NGINX upstream idle time (4 s, `keepalive_timeout` in the template).
 - Request headers: Node accepts 96 KiB (`maxHeaderSize`), because the largest valid
   `GET /api/ratings` (20 tracks of 500 characters) is about 90 KB. Keep this value the
   same as `large_client_header_buffers` in the NGINX config.

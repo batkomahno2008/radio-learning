@@ -103,7 +103,7 @@ Renewals use the same webroot while TLS is on. Reload NGINX after a renewal
 ## Test the config
 
 Use the stock image with the files of this directory mounted. Start the app first
-(the app of issue #6; before #6, the app uses `DB_PATH` and needs no `DATABASE_URL`):
+(see "Commands" in `CLAUDE.md` for a local Postgres):
 
 ```bash
 npm ci

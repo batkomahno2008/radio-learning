@@ -91,7 +91,7 @@ gzip_types text/css text/javascript application/javascript application/json imag
 upstream app_upstream {
     server ${APP_UPSTREAM};
     keepalive 16;
-    # Close idle connections before Node does (Node default: 5 s, audit N8).
+    # Close idle connections before the app does (app: 65 s, Node default: 5 s, audit N8).
     keepalive_timeout 4s;
 }
 
