@@ -4,8 +4,8 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --env-file-if-exists=.env --watch server.js",
     "test:e2e": "cucumber-js",
     "test:e2e:smoke": "cucumber-js --tags @smoke",
     "test:e2e:live": "cucumber-js --profile live"
@@ -15,9 +15,9 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
     "express": "^5.2.1",
-    "hls.js": "^1.7.3"
+    "hls.js": "^1.7.3",
+    "pg": "^8.23.1"
   },
   "private": true,
   "devDependencies": {
