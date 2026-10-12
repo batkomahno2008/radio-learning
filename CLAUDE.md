@@ -49,8 +49,12 @@ npm run test:e2e:live     # only @live scenarios, against the real station feed
 npx cucumber-js tests/features/ratings.feature:20        # one scenario, by line
 npx cucumber-js --name "Giving a thumbs up"              # one scenario, by name
 HEADED=1 SLOWMO=250 npm run test:e2e                     # watch it in a browser
-BASE_URL=http://staging:8080/ npm run test:e2e           # test a deployed app
+BASE_URL=http://localhost:8080/ npm run test:e2e         # test a deployed app (NGINX)
 ```
+
+With plain HTTP, `BASE_URL` must be a loopback origin (`localhost` or `127.0.0.1`) or an
+HTTPS origin. Another host name is not a secure context. Chromium then logs a console error for the
+`Cross-Origin-Opener-Policy` header of NGINX, and the clean-console rule fails each scenario.
 
 The e2e suite needs Playwright's Chromium once per machine:
 `sudo npx playwright install --with-deps chromium`. The suite starts Chromium with no
@@ -216,11 +220,15 @@ docker run --rm --network host --shm-size=1g -e BASE_URL=http://localhost:8080/ 
 docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml down -v
 ```
 
-The E2E runner must reach NGINX as `localhost`. A page on plain HTTP with another host name (for
-example `http://proxy:8080/`) is not a secure context. Chromium then logs a console error for the
-`Cross-Origin-Opener-Policy` header, and the clean-console rule fails each scenario. Use
-`--network host` with the published port, or `--network container:<proxy container>` with
-`BASE_URL=http://localhost:8080/`.
+The E2E runner must reach NGINX on a loopback origin (`localhost` or `127.0.0.1`). A page on
+plain HTTP with another host name (for example `http://proxy:8080/`) is not a secure context.
+Chromium then logs a console error for the `Cross-Origin-Opener-Policy` header, and the
+clean-console rule fails each scenario. NGINX keeps the header, and the harness has no
+exception (decision on PR #24). Use `--network host` with the published port, or
+`--network container:<proxy container>` with `BASE_URL=http://localhost:8080/`.
+
+The Compose files need Docker Compose 2.24.0 or later (`!reset`) and Docker Engine 25 or later
+(`start_interval` in the health checks).
 
 **TLS** (`deploy/compose/compose.tls.yaml`, decision D14) adds port `${HTTPS_PORT:-443}`. It mounts
 `deploy/nginx/tls/tls.conf` and the directory in `CERTS_DIR` (`fullchain.pem` and `privkey.pem`)
@@ -333,11 +341,13 @@ in `pages/`, and the harness in `support/`.
   control what is on air. Requests to other origins than `BASE_URL` (web fonts) are
   stubbed.
 - **Secure context:** `crypto.randomUUID()` exists only in a secure context (HTTPS or
-  `localhost`). Staging uses plain HTTP on a host name that is not `localhost`, so
-  `public/app.js` then makes the client id (a UUID v4) from `crypto.getRandomValues()`.
-  Chromium starts with no flag that changes this, so the suite tests what a real
-  browser does. To test this path locally, start the app with `HOST=0.0.0.0` and use
-  a `BASE_URL` with an address that is not loopback.
+  `localhost`). On plain HTTP with a host name that is not loopback, `public/app.js` makes the
+  client id (a UUID v4) from `crypto.getRandomValues()`. Chromium starts with no flag that
+  changes this, so the suite tests what a real browser does. Staging E2E goes through NGINX
+  and reaches it on a loopback origin (decision on PR #24), so the page uses
+  `crypto.randomUUID()` there, as in production. To test the fallback, run the suite
+  directly against the app (no NGINX, so no COOP header): start it with `HOST=0.0.0.0`
+  and use a `BASE_URL` with an address that is not loopback.
 - **No waiting for polls:** each browser context has Playwright's clock installed;
   `PlayerPage.pollStation()` fast-forwards 10 seconds to trigger the next metadata poll.
 - **Listeners:** steps name an actor ("Alice", "Bob"). `World.player(name)` lazily opens

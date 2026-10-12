@@ -2,13 +2,19 @@
 #
 #   STAGING_ID=pr-12 APP_IMAGE=... PROXY_IMAGE=... POSTGRES_PASSWORD=... \
 #     docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml up -d --wait
-#   docker run --rm --network radio-learning-staging-pr-12_edge \
-#     -e BASE_URL=http://proxy:8080/ <e2e image>
+#   docker run --rm --network container:radio-learning-staging-pr-12-proxy-1 \
+#     --shm-size=1g -e BASE_URL=http://localhost:8080/ <e2e image>
 #   docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml down -v
 #
 # - It builds nothing: APP_IMAGE and PROXY_IMAGE name images that exist.
 # - It has no named volume. The database lives in memory and `down -v` removes it.
-# - It has no TLS. The E2E runner uses http://proxy:8080/ on the edge network.
+# - It has no TLS. BASE_URL must be a loopback origin (localhost or 127.0.0.1)
+#   that reaches NGINX. Plain HTTP with another host name, for example
+#   http://proxy:8080/, is not a secure context: Chromium logs a console error
+#   for the COOP header and the clean-console rule fails each scenario.
+#   The runner shares the network of the proxy container, so NGINX is localhost.
+#   Another way: --network host with BASE_URL=http://localhost:${HTTP_PORT}/.
+# - Run the suite with the `--profile live` argument for the @live scenarios.
 # - The project name has STAGING_ID, so two stacks can run at the same time.
 # - Compose resolves the relative paths from the directory of compose.yaml.
 

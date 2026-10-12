@@ -62,7 +62,7 @@ FROM deps-dev AS test
 COPY package.json app.js config.js db.js schema.sql ./
 COPY public ./public
 COPY tests/api ./tests/api
-RUN npm run test:api \
+RUN --network=none npm run test:api \
     && touch /test-passed
 
 # ---------------------------------------------------------------------------
