@@ -1,4 +1,5 @@
 const path = require('node:path');
+const express = require('express');
 
 // Reads and checks all environment variables of the app. Other modules get their
 // settings from here and do not read process.env. Messages never show the value
@@ -50,6 +51,13 @@ function trustProxy(value) {
   if (value === undefined || value === '' || value === 'false') return false;
   if (value === 'true') return true;
   if (/^\d+$/.test(value)) return Number(value);
+  // Express checks the list when it gets the setting. Do the same check here, so a
+  // wrong value stops the start before the database wait.
+  try {
+    express().set('trust proxy', value);
+  } catch (err) {
+    throw new Error(`TRUST_PROXY must be false, true, a number of hops or a list of addresses (${err.message}).`);
+  }
   return value;
 }
 

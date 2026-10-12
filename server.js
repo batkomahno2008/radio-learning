@@ -8,6 +8,10 @@ const { createApp } = require('./app');
 // at that moment (a 502). headersTimeout must be above keepAliveTimeout.
 const KEEP_ALIVE_TIMEOUT_MS = 65000;
 const HEADERS_TIMEOUT_MS = 66000;
+// The largest valid GET /api/ratings (20 tracks of 500 characters, percent-encoded)
+// has a request line of about 90 KB. The Node default (16 KiB) refuses it with 431.
+// Keep this value the same as large_client_header_buffers in the NGINX config.
+const MAX_HEADER_SIZE = 96 * 1024;
 // Time limit for open requests after SIGTERM. By default, Compose sends SIGKILL
 // 10 s after SIGTERM and Kubernetes 30 s after it.
 const SHUTDOWN_TIMEOUT_MS = 10000;
@@ -15,27 +19,11 @@ const SHUTDOWN_TIMEOUT_MS = 10000;
 async function start() {
   const config = loadConfig();
   const pool = createPool(config);
-  let server;
-  try {
-    await waitForDatabase(pool);
-    await migrate(pool);
-    const app = createApp({ pool, streamsFile: config.streamsFile, serveStatic: config.serveStatic });
-    app.set('trust proxy', config.trustProxy);
-    server = http.createServer(app);
-    server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
-    server.headersTimeout = HEADERS_TIMEOUT_MS;
-    await new Promise((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(config.port, config.host, resolve);
-    });
-  } catch (err) {
-    await pool.end().catch(() => {});
-    throw err;
-  }
-
-  const { address, port } = server.address();
-  // Keep the "Listening on" text: people and scripts look for it (audit N19).
-  console.log(`Listening on http://${address.includes(':') ? `[${address}]` : address}:${port}`);
+  const app = createApp({ pool, streamsFile: config.streamsFile, serveStatic: config.serveStatic });
+  app.set('trust proxy', config.trustProxy);
+  const server = http.createServer({ maxHeaderSize: MAX_HEADER_SIZE }, app);
+  server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
+  server.headersTimeout = HEADERS_TIMEOUT_MS;
 
   // After close(), Node keeps a keep-alive connection open when its last request
   // ends. So during shutdown, each answer tells the client to close the connection,
@@ -55,11 +43,20 @@ async function start() {
   function shutdown(signal) {
     if (closing) return;
     closing = true;
-    console.log(`${signal} received. Closing the server.`);
     setTimeout(() => {
-      console.error(`Open requests did not finish in ${SHUTDOWN_TIMEOUT_MS / 1000} s. Exit now.`);
+      console.error(`Shutdown did not finish in ${SHUTDOWN_TIMEOUT_MS / 1000} s. Exit now.`);
       process.exit(1);
     }, SHUTDOWN_TIMEOUT_MS).unref();
+    if (!server.listening) {
+      // The app still waits for the database or runs the migration. No request is open.
+      console.log(`${signal} received before the start completed. Closing the database pool.`);
+      pool.end().then(
+        () => process.exit(0),
+        () => process.exit(1)
+      );
+      return;
+    }
+    console.log(`${signal} received. Closing the server.`);
     for (const res of open) if (!res.headersSent) res.setHeader('Connection', 'close');
     // With no open server and no pool, nothing keeps Node busy, so it exits with code 0.
     server.close(() => {
@@ -73,8 +70,29 @@ async function start() {
     });
     server.closeIdleConnections();
   }
+  // Add the handlers before the database wait. Node as PID 1 in a container gets no
+  // default action for SIGTERM, so without a handler `docker stop` waits for SIGKILL.
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+
+  try {
+    await waitForDatabase(pool);
+    await migrate(pool);
+    if (closing) return;
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(config.port, config.host, resolve);
+    });
+  } catch (err) {
+    // During a shutdown, the pool ends under the start: shutdown() exits.
+    if (closing) return;
+    await pool.end().catch(() => {});
+    throw err;
+  }
+
+  const { address, port } = server.address();
+  // Keep the "Listening on" text: people and scripts look for it (audit N19).
+  console.log(`Listening on http://${address.includes(':') ? `[${address}]` : address}:${port}`);
 }
 
 start().catch((err) => {

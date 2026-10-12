@@ -96,16 +96,21 @@ function createApp({ pool, streamsFile, serveStatic = true }) {
   });
 
   // Readiness: the app can use the database. The orchestrator stops traffic to the
-  // app while this returns 503.
+  // app while this returns 503. NGINX sends /api/* to the app, so this answer is
+  // public: it shows no version data (audit N1, security policy 9.6).
   app.get('/api/ready', async (req, res) => {
     try {
       await pool.query('SELECT 1');
-      const { rows } = await pool.query('SHOW server_version');
-      res.json({ status: 'ready', postgres: rows[0].server_version.split('.')[0] });
+      res.json({ status: 'ready' });
     } catch (err) {
       console.error(`Readiness check failed: ${err.message}`);
       res.status(503).json({ status: 'unavailable' });
     }
+  });
+
+  // An API client gets JSON also for a path that does not exist.
+  app.use('/api', (req, res) => {
+    res.status(404).json({ error: 'not found' });
   });
 
   // Express 5 sends errors from async handlers here, and also a body that is not

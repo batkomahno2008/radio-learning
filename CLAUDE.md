@@ -25,7 +25,7 @@ change the password in `POSTGRES_PASSWORD` and `DATABASE_URL`. Then start Postgr
 in Docker. The command reads the three `POSTGRES_` values from `.env`:
 
 ```bash
-docker run -d --name radio-db --env-file .env -p 127.0.0.1:5432:5432 -v radio-db:/var/lib/postgresql postgres:18-alpine
+docker run -d --name radio-db --env-file .env -p 127.0.0.1:5432:5432 -v radio-db:/var/lib/postgresql postgres:18.6-alpine
 ```
 
 The `radio-db` volume keeps the data. Use `docker stop radio-db` and
@@ -81,14 +81,20 @@ serves the static files and sends `/api/*` to the app (epic #1, decision D12).
 - `app.js` — `createApp({ pool, streamsFile, serveStatic })` returns the Express app and
   does not listen. The caller gives the pool, so tests can give a pg-mem pool. The JSON
   API: `/api/streams`, `/api/ratings`, `/api/health` (liveness, no database) and
-  `/api/ready` (readiness, 503 when the database is down). With `serveStatic`, it also
-  serves `public/` and hls.js from `node_modules` at `/vendor/hls`. A JSON error handler
-  answers with no stack trace and logs to stderr. Express sends no `X-Powered-By`.
-- `server.js` — loads the config, makes the pool, waits for the database, runs
-  `migrate`, makes the app, sets `trust proxy` and listens on `HOST:PORT`. It logs
-  `Listening on ...`. On SIGTERM or SIGINT, it stops new connections, lets open
-  requests finish, closes the pool and exits 0. After 10 s, it exits 1. The keep-alive
-  timeout (65 s) is longer than the NGINX upstream idle time (60 s).
+  `/api/ready` (readiness: `SELECT 1`, 503 when the database is down). The two health
+  answers show no version data, because NGINX makes them public. An unknown `/api/*`
+  path gets a JSON 404. With `serveStatic`, the app also serves `public/` and hls.js
+  from `node_modules` at `/vendor/hls`. A JSON error handler answers with no stack
+  trace and logs to stderr. Express sends no `X-Powered-By`.
+- `server.js` — loads the config, makes the pool, the app and the HTTP server, adds the
+  SIGTERM and SIGINT handlers, waits for the database, runs `migrate` and listens on
+  `HOST:PORT`. It logs `Listening on ...`. A signal before `Listening on` closes the
+  pool and exits 0. A signal after it stops new connections, lets open requests finish,
+  closes the pool and exits 0. After 10 s, it exits 1. The keep-alive timeout (65 s)
+  is longer than the NGINX upstream idle time (60 s).
+- Request headers: Node accepts 96 KiB (`maxHeaderSize`), because the largest valid
+  `GET /api/ratings` (20 tracks of 500 characters) is about 90 KB. Keep this value the
+  same as `large_client_header_buffers` in the NGINX config.
 - `public/index.html` — markup only. It has no inline script, so the CSP can use
   `script-src 'self'`.
 - `public/app.js` — the client script, no bundler. `index.html` loads it after hls.js.
