@@ -232,7 +232,7 @@ The test data has no value that looks like a real secret. Gitleaks gives 0 resul
 
 Result on 2026-10-12: 9 of 9 cases pass. The PoC also split the rendered `compose-bad` case into
 one file for each service (the S4 render step): the same 26 HIGH results, each on the file of its
-service (`app.yaml` 11, `db.yaml` 9, `proxy.yaml` 6).
+service (`app.yaml` 10, `db.yaml` 9, `proxy.yaml` 7).
 
 ## Proof of concept
 
