@@ -138,3 +138,15 @@ in `pages/`, and the harness in `support/`.
 - `RatingWidget.vote()` waits for the POST to finish before returning; keep that when
   adding steps that click thumbs back to back, because of the click-ignoring rule above.
 - Tags: `@smoke`, `@live` (excluded from the default profile), `@wip` (always excluded).
+
+## Security scans
+
+`docs/security/policy.md` sets the scan targets (S1 to S11) and the gate.
+`docs/adr/0002-security-tooling.md` selects the tools, pins them, and gives the command for each target.
+
+- `security/exceptions.yaml` is the one exception file for all scanners. The ADR gives its format.
+- `security/trivy/checks/` holds the project checks for Trivy (Compose rules, digest pins,
+  service account token). A change to them needs a review by the Security Specialist.
+- `security/edge-check.sh <base-url>` checks the headers, the CSP, the rate limits and the body
+  size of a running NGINX (S10). Run it after the E2E suite, because it causes `429` responses.
+- `.github/zizmor.yml` and `.github/codeql/codeql-config.yml` configure S9 and S8.
