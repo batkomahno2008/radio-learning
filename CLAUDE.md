@@ -20,13 +20,25 @@ pull request descriptions.
 
 Node version is pinned in `.nvmrc`. There is no build step and no linter.
 
+The app needs Postgres. For local development, copy `.env.example` to `.env` and
+change the password in `POSTGRES_PASSWORD` and `DATABASE_URL`. Then start Postgres 18
+in Docker. The command reads the three `POSTGRES_` values from `.env`:
+
 ```bash
-npm start                 # node server.js on http://localhost:3000 (PORT overrides)
+docker run -d --name radio-db --env-file .env -p 127.0.0.1:5432:5432 -v radio-db:/var/lib/postgresql postgres:18.6-alpine
+```
+
+The `radio-db` volume keeps the data. Use `docker stop radio-db` and
+`docker start radio-db` to stop and start it. To delete all ratings, remove the
+container and the volume (`docker rm -f radio-db && docker volume rm radio-db`).
+
+```bash
+npm start                 # node server.js on http://localhost:3000; reads .env
 npm run dev               # same, restarting on file changes
 
 # The e2e suite does not start the app. Start it first, in a different terminal,
-# with the fake station as its stream list and a temporary database:
-STREAMS_FILE=tests/fixtures/streams.txt DB_PATH=/tmp/radio-e2e.db npm start
+# with the fake station as its stream list:
+STREAMS_FILE=tests/fixtures/streams.txt npm start
 
 npm run test:e2e          # full Cucumber suite against a fake station (~10 s)
 npm run test:e2e:smoke    # only @smoke scenarios
@@ -39,8 +51,8 @@ BASE_URL=http://staging:8080/ npm run test:e2e           # test a deployed app
 ```
 
 The e2e suite needs Playwright's Chromium once per machine:
-`sudo npx playwright install --with-deps chromium`. The suite uses the full Chromium
-(`channel: 'chromium'`), not the headless shell.
+`sudo npx playwright install --with-deps chromium`. The suite starts Chromium with no
+special flags. Headless runs use the headless shell.
 
 E2E runner variables:
 - `BASE_URL` (default `http://localhost:3000/`): the app under test. On staging, this is
@@ -52,18 +64,55 @@ A failed run writes `reports/cucumber.html` with a full-page screenshot per list
 
 ## Architecture
 
-A single-page internet radio player: an Express 5 server, a SQLite database and one
-static HTML file. CommonJS throughout.
+A single-page internet radio player: an Express 5 app, a Postgres database, and one
+static HTML page with its client script. CommonJS throughout. In deployments, NGINX
+serves the static files and sends `/api/*` to the app (epic #1, decision D12).
 
-- `server.js` — serves `public/`, exposes hls.js from `node_modules` at `/vendor/hls`,
-  and the JSON API (`/api/streams`, `/api/ratings`, `/api/health`). Binds to 127.0.0.1 only.
-- `db.js` — opens the database with better-sqlite3 and executes `schema.sql` on every
-  start, so every statement in `schema.sql` must stay idempotent.
-- `public/index.html` — markup and client script in one file, no bundler.
+- `config.js` — `loadConfig()` reads and checks all environment variables. A missing
+  or wrong value stops the start with a clear message. Other modules do not read
+  `process.env`.
+- `db.js` — `createPool(config)` makes the `pg` pool (10 connections at most) and logs
+  pool errors. `waitForDatabase(pool)` retries the first connection (10 attempts in
+  about 30 s). `migrate(pool)` applies `schema.sql` in one transaction under
+  `pg_advisory_xact_lock`, so app processes that start at the same time do not collide.
+- `schema.sql` — applied on every start, so every statement must stay idempotent. Keep
+  the SQL simple, because the API tests run it on pg-mem. For example, use
+  `SUM(CASE WHEN ...)` and not `COUNT(*) FILTER (...)`.
+- `app.js` — `createApp({ pool, streamsFile, serveStatic })` returns the Express app and
+  does not listen. The caller gives the pool, so tests can give a pg-mem pool. The JSON
+  API: `/api/streams`, `/api/ratings`, `/api/health` (liveness, no database) and
+  `/api/ready` (readiness: `SELECT 1`, 503 when the database is down). The two health
+  answers show no version data, because NGINX makes them public. An unknown `/api/*`
+  path gets a JSON 404. With `serveStatic`, the app also serves `public/` and hls.js
+  from `node_modules` at `/vendor/hls`. A JSON error handler answers with no stack
+  trace and logs to stderr. Express sends no `X-Powered-By`.
+- `server.js` — loads the config, makes the pool, the app and the HTTP server, adds the
+  SIGTERM and SIGINT handlers, waits for the database, runs `migrate` and listens on
+  `HOST:PORT`. It logs `Listening on ...`. A signal before `Listening on` closes the
+  pool and exits 0. A signal after it stops new connections, lets open requests finish,
+  closes the pool and exits 0. After 10 s, it exits 1. The keep-alive timeout (65 s)
+  is longer than the NGINX upstream idle time (60 s).
+- Request headers: Node accepts 96 KiB (`maxHeaderSize`), because the largest valid
+  `GET /api/ratings` (20 tracks of 500 characters) is about 90 KB. Keep this value the
+  same as `large_client_header_buffers` in the NGINX config.
+- `public/index.html` — markup only. It has no inline script, so the CSP can use
+  `script-src 'self'`.
+- `public/app.js` — the client script, no bundler. `index.html` loads it after hls.js.
 - `public/styles.css` — all CSS, linked from `index.html`.
 
-Environment overrides: `PORT`, `DB_PATH` (default `data/dev.db`), `STREAMS_FILE`
-(default `stream_URL.txt`, re-read on every `/api/streams` request).
+Environment variables (`.env.example` has all of them):
+
+| Name | Default | Notes |
+|---|---|---|
+| `DATABASE_URL` | – (required) | `postgres://user:password@host:5432/database`. The app does not log it. |
+| `HOST` | `127.0.0.1` | The address that the app listens on. A container uses `0.0.0.0`. |
+| `PORT` | `3000` | |
+| `STREAMS_FILE` | `stream_URL.txt` in the app directory | Read again on each `/api/streams` request. |
+| `SERVE_STATIC` | `true` | `false`: the app does not serve `public/` and `/vendor/hls`, because NGINX serves them. |
+| `TRUST_PROXY` | `false` | Express `trust proxy`. Deployments use `1` (one NGINX in front of the app). |
+
+`npm start` and `npm run dev` read `.env` when it exists. A variable that the shell
+sets has priority over `.env`.
 
 ### How the page gets its data
 
@@ -84,6 +133,8 @@ one, rather than leaving the choice to bitrate-based switching.
 - One row per (track, client) with value 1 or -1; clearing a rating deletes the row.
 - `GET /api/ratings` takes one or more `track` params (max 20) and returns a map of
   `{ up, down, mine }` per track. The page makes one batched request per metadata poll.
+  The server gets all tracks of a request in one query (`track = ANY($1)`).
+- All queries use parameters (`$1`, `$2`, ...). Do not put request data into SQL text.
 - Votes are optimistic in the client. While a vote is being saved, further clicks on
   that track are ignored, and a poll response that overlapped a vote is discarded.
 
@@ -117,11 +168,12 @@ in `pages/`, and the harness in `support/`.
   as `the station is playing "Artist - Title"` and `the station starts playing "..."`
   control what is on air. Requests to other origins than `BASE_URL` (web fonts) are
   stubbed.
-- **Secure context:** the page uses `crypto.randomUUID()`, which needs a secure context.
-  Chromium starts with `--unsafely-treat-insecure-origin-as-secure` for the `BASE_URL`
-  origin, because staging uses plain HTTP on a host name that is not `localhost`.
-  The flag hides a known product limit (audit N7). #6 removes the flag and the
-  `channel: 'chromium'` line when it adds a fallback for the client id.
+- **Secure context:** `crypto.randomUUID()` exists only in a secure context (HTTPS or
+  `localhost`). Staging uses plain HTTP on a host name that is not `localhost`, so
+  `public/app.js` then makes the client id (a UUID v4) from `crypto.getRandomValues()`.
+  Chromium starts with no flag that changes this, so the suite tests what a real
+  browser does. To test this path locally, start the app with `HOST=0.0.0.0` and use
+  a `BASE_URL` with an address that is not loopback.
 - **No waiting for polls:** each browser context has Playwright's clock installed;
   `PlayerPage.pollStation()` fast-forwards 10 seconds to trigger the next metadata poll.
 - **Listeners:** steps name an actor ("Alice", "Bob"). `World.player(name)` lazily opens
