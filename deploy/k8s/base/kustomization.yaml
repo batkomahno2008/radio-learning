@@ -1,0 +1,43 @@
+# Base of the Radio Learning deployment: NGINX, the app and Postgres (epic #1, D8).
+# Use an overlay (../overlays/staging or ../overlays/prod), not this directory.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: radio-learning
+
+resources:
+  - namespace.yaml
+  - postgres-statefulset.yaml
+  - postgres-service.yaml
+  - app-deployment.yaml
+  - app-service.yaml
+  - proxy-deployment.yaml
+  - proxy-service.yaml
+  - networkpolicy.yaml
+  - poddisruptionbudget.yaml
+  - backup-pvc.yaml
+  - backup-cronjob.yaml
+
+# The Secret "radio-learning-db" is not here. It has the keys DATABASE_URL,
+# POSTGRES_USER, POSTGRES_DB and POSTGRES_PASSWORD. The staging overlay makes it
+# from a file. In production, make it with "kubectl create secret" (README).
+
+configMapGenerator:
+  # The stream list of the app (STREAMS_FILE). One stream on each line.
+  - name: radio-learning-streams
+    files:
+      - streams.txt
+  # The environment of NGINX (deploy/nginx/README.md). STATION_ORIGINS must hold the
+  # origin of each stream in the stream list. A change of this ConfigMap restarts the pods.
+  - name: radio-learning-proxy-env
+    literals:
+      - APP_UPSTREAM=radio-learning:80
+      - STATION_ORIGINS=https://d3d4yli4hf5bmh.cloudfront.net
+      - REAL_IP_FROM=
+
+# Overlays change the tags. Prefer a digest in production.
+images:
+  - name: ghcr.io/batkomahno2008/radio-learning
+    newTag: main
+  - name: ghcr.io/batkomahno2008/radio-learning-proxy
+    newTag: main

@@ -1,0 +1,27 @@
+# Component: a generic Ingress for clusters without Gateway API (epic #1, D13).
+# It replaces the HTTPRoute of the prod overlay. Do not use the retired community
+# NGINX Ingress controller of the Kubernetes project. Use a maintained controller.
+#
+# Use it in your own overlay:
+#   resources:
+#     - ../../overlays/prod
+#   components:
+#     - ../../components/ingress
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - ingress.yaml
+
+patches:
+  # Remove the HTTPRoute, because a cluster without Gateway API does not know this kind.
+  # The patch does nothing when the build has no HTTPRoute.
+  - target:
+      group: gateway.networking.k8s.io
+      kind: HTTPRoute
+    patch: |-
+      $patch: delete
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: radio-learning

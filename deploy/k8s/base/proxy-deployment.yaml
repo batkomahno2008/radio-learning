@@ -1,0 +1,103 @@
+# NGINX: the only entry point for users (epic #1, D12 and D13).
+# The image has the config and the static files. NGINX writes only to /tmp.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: radio-learning-proxy
+  labels:
+    app.kubernetes.io/name: radio-learning-proxy
+    app.kubernetes.io/component: proxy
+    app.kubernetes.io/part-of: radio-learning
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: radio-learning-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: radio-learning-proxy
+        app.kubernetes.io/component: proxy
+        app.kubernetes.io/part-of: radio-learning
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: radio-learning-proxy
+      containers:
+        - name: nginx
+          # The kustomization sets the tag.
+          image: ghcr.io/batkomahno2008/radio-learning-proxy
+          ports:
+            - name: http
+              containerPort: 8080
+          # APP_UPSTREAM, STATION_ORIGINS and REAL_IP_FROM. See deploy/nginx/README.md.
+          envFrom:
+            - configMapRef:
+                name: radio-learning-proxy-env
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # NGINX starts one worker for each CPU of the node ("worker_processes auto"),
+          # and each worker can use 4 header buffers of 96 KiB for each connection.
+          # Check the memory limit again on a node with many CPUs
+          # (see deploy/k8s/README.md).
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          lifecycle:
+            # Wait until the Service stops to send new requests to this pod.
+            preStop:
+              sleep:
+                seconds: 5
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

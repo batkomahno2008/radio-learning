@@ -1,0 +1,84 @@
+# Staging: a temporary environment on a kind cluster (epic #1, D1).
+# The images come from "kind load docker-image". The fake station serves the audio.
+# Before you build this overlay, run deploy/k8s/kind/db-env.sh to make db.env.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: radio-learning
+
+resources:
+  - ../../base
+
+# db.env holds random values and stays out of Git (.gitignore).
+secretGenerator:
+  - name: radio-learning-db
+    envs:
+      - db.env
+    options:
+      # The workloads refer to the name "radio-learning-db", as in production.
+      disableNameSuffixHash: true
+
+configMapGenerator:
+  # The fake station of the E2E suite (the same as tests/fixtures/streams.txt).
+  - name: radio-learning-streams
+    behavior: replace
+    files:
+      - streams.txt
+  # The CSP allows the fake station and the real station, so the @live scenarios
+  # run through this NGINX (epic #1, decision of 2026-10-12).
+  - name: radio-learning-proxy-env
+    behavior: merge
+    literals:
+      - STATION_ORIGINS=https://station.test https://d3d4yli4hf5bmh.cloudfront.net
+
+images:
+  - name: ghcr.io/batkomahno2008/radio-learning
+    newName: radio-learning
+    newTag: ci
+  - name: ghcr.io/batkomahno2008/radio-learning-proxy
+    newName: radio-learning-proxy
+    newTag: ci
+
+patches:
+  # The kind cluster has no load balancer. Users reach NGINX on the node port 30080
+  # (deploy/k8s/kind/cluster.yaml maps it to the host port 8080).
+  - target:
+      kind: Service
+      name: radio-learning-proxy
+    patch: |-
+      - op: replace
+        path: /spec/type
+        value: NodePort
+      - op: add
+        path: /spec/ports/0/nodePort
+        value: 30080
+  # kind load puts the images on the node. The cluster must not pull them.
+  - target:
+      kind: Deployment
+      name: radio-learning
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+  - target:
+      kind: Deployment
+      name: radio-learning-proxy
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+  # Small volumes.
+  - target:
+      kind: StatefulSet
+      name: postgres
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 1Gi
+  - target:
+      kind: PersistentVolumeClaim
+      name: radio-learning-backup
+    patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 1Gi

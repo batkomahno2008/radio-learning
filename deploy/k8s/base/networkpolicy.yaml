@@ -1,0 +1,81 @@
+# Rule R8 of docs/security/policy.md: only NGINX is reachable from outside.
+# The cluster needs a network plugin that enforces NetworkPolicy (for example Calico).
+# Without such a plugin, these objects have no effect.
+#
+# 1. Deny all incoming traffic to all pods of the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  labels:
+    app.kubernetes.io/part-of: radio-learning
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# 2. NGINX accepts traffic on its port from any source: the cluster edge (Gateway or
+#    Ingress controller) and the NodePort. To limit the sources, add a "from" list.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-proxy-ingress
+  labels:
+    app.kubernetes.io/part-of: radio-learning
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: radio-learning-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080
+---
+# 3. The app accepts traffic only from the NGINX pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-from-proxy
+  labels:
+    app.kubernetes.io/part-of: radio-learning
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: radio-learning
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: radio-learning-proxy
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+# 4. Postgres accepts traffic only from the app pods and the backup job.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-from-app-and-backup
+  labels:
+    app.kubernetes.io/part-of: radio-learning
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: radio-learning
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: radio-learning-backup
+      ports:
+        - protocol: TCP
+          port: 5432

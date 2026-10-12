@@ -1,0 +1,14 @@
+# Volume for the dump files. It is separate from the data volume of Postgres.
+# Keep a copy of the dump files outside the cluster (see deploy/k8s/README.md).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: radio-learning-backup
+  labels:
+    app.kubernetes.io/name: radio-learning-backup
+    app.kubernetes.io/part-of: radio-learning
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi

@@ -1,0 +1,27 @@
+# A node drain removes one pod at a time. With one replica, the drain can still
+# remove the pod. Use 2 replicas (the prod overlay does) to keep the service up.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: radio-learning-proxy
+  labels:
+    app.kubernetes.io/name: radio-learning-proxy
+    app.kubernetes.io/part-of: radio-learning
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: radio-learning-proxy
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: radio-learning
+  labels:
+    app.kubernetes.io/name: radio-learning
+    app.kubernetes.io/part-of: radio-learning
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: radio-learning
