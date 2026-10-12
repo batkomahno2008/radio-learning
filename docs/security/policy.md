@@ -88,7 +88,7 @@ The gate has two modes.
 
 ## 5. Exceptions
 
-An exception lets a known finding stay open for a limited time.
+An exception lets a known finding stay open. Most exceptions have a limited time. Only a revoked secret has no expiry (5.1).
 
 ### 5.1 Rules
 
@@ -273,7 +273,7 @@ These decisions have a default in this policy. The user can change them.
 |---|---|---|
 | U1 | The page loads web fonts from a third-party host today. | The CSP allows `https://fonts.googleapis.com` and `https://fonts.gstatic.com` for v1.0.0. This is an accepted risk (threat T12). Self-hosting the fonts removes the risk and the two origins. |
 | U2 | Severity threshold of the gate. | CRITICAL and HIGH with a fix available (the recommendation of #3). |
-| U3 | Maximum time to expiry of an exception. | 90 days for HIGH, 30 days for CRITICAL. |
+| U3 | Maximum time to expiry of an exception. | 30 days for CRITICAL. 90 days for HIGH, for findings with no severity and for failed checks of sections 7, 8 and 9. `never` for a revoked secret, with the revocation date in `reason` (5.1). |
 | U4 | Rate limit values. | The values of section 9.3, in one place in the NGINX config template. |
 
 ## 12. Threat list
