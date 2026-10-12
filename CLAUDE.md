@@ -77,8 +77,8 @@ one, rather than leaving the choice to bitrate-based switching.
 
 ### Design references
 
-`RadioCalico_Style_Guide.txt` (palette, typography, component rules) and
-`RadioCalico_Layout.md` / `RadioCalicoLayout.png` (target layout) are the source of
+`RadioLearning_Style_Guide.txt` (palette, typography, component rules) and
+`RadioLearning_Layout.md` / `RadioLearningLayout.png` (target layout) are the source of
 truth for visual changes. The CSS custom properties in `styles.css` mirror the palette.
 
 ## E2E tests (`tests/`)
