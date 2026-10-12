@@ -1,0 +1,24 @@
+# Security exceptions for all scanners (docs/security/policy.md, section 5).
+# The format and the matching rules are in docs/adr/0002-security-tooling.md, section "Exception file".
+#
+# Rules (summary):
+# - Each entry must have all six fields: id, finding, target, reason, owner, expires.
+#   The gate ignores an entry with a missing or empty field, and writes a warning in the job summary.
+# - One entry applies to one finding in one target. Do not use wildcards (* or ?).
+# - 'target' is one value from the list in the ADR, for example "S2 runtime image".
+# - 'finding' is the ID that the scanner reports (see the ADR for the format of each scanner).
+# - 'expires' is an ISO 8601 date (YYYY-MM-DD), or "never" for a revoked secret only.
+#   Maximum time to expiry: CRITICAL 30 days, HIGH 90 days, other findings 90 days.
+#   After the date, the finding is a gate violation again.
+# - Do not use an 'id' again, also after you remove the entry.
+# - The Security Specialist (role:security) approves each new entry in the pull request review.
+#
+# Example (do not copy the values):
+#   - id: EXC-001
+#     finding: CVE-2026-12345
+#     target: S2 runtime image
+#     reason: No fix is available upstream. The app does not use the vulnerable function.
+#     owner: "@batkomahno2008"
+#     expires: 2026-12-31
+
+exceptions: []

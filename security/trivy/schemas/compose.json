@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/batkomahno2008/radio-learning/security/trivy/schemas/compose.json",
+  "title": "Docker Compose file (minimal shape for Trivy file matching)",
+  "description": "Trivy uses this schema only to find Compose files. A file matches when it has a 'services' map. The RL-DC checks examine the services.",
+  "type": "object",
+  "required": ["services"],
+  "properties": {
+    "services": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "object" }
+    }
+  }
+}

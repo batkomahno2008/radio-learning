@@ -1,0 +1,8 @@
+# zizmor configuration for scan target S9 (docs/security/policy.md, section 8.1).
+# Tool selection and commands: docs/adr/0002-security-tooling.md.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # Policy 8.1: pin each action to a full commit SHA, also the actions of GitHub.
+        "*": hash-pin

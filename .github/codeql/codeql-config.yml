@@ -1,0 +1,8 @@
+# CodeQL configuration for scan target S8 (docs/security/policy.md).
+# Tool selection and commands: docs/adr/0002-security-tooling.md.
+name: radio-learning S8
+queries:
+  # The security-extended suite adds medium-precision security queries to the default suite.
+  - uses: security-extended
+# The policy scans all JavaScript in the repository, server code, client code and tests.
+# CodeQL ignores node_modules by default.
