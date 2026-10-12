@@ -65,6 +65,25 @@ static HTML file. CommonJS throughout.
 Environment overrides: `PORT`, `DB_PATH` (default `data/dev.db`), `STREAMS_FILE`
 (default `stream_URL.txt`, re-read on every `/api/streams` request).
 
+### NGINX proxy (`deploy/nginx/`)
+
+In deployments, NGINX is the entry point (epic #1, D12). It serves `public/` and the
+hls.js files at `/vendor/hls/`, and it sends `/api/*` to the app. `deploy/nginx/README.md`
+has the file layout, the mounts, the variables and the test commands.
+
+- Image: `nginxinc/nginx-unprivileged` (stable, alpine), pinned by digest. Port 8080 (HTTP)
+  and 8443 (HTTPS, only when `tls/tls.conf` is mounted). NGINX writes only to `/tmp`.
+- Variables: `APP_UPSTREAM` (default `app:3000`), `STATION_ORIGINS` (station origins for
+  the CSP) and `REAL_IP_FROM` (off by default). `15-radio-learning.envsh` checks them at start.
+- Edge controls: security headers and CSP on each answer, rate limits, connection limit,
+  16 KiB body limit, gzip and a JSON access log. All limit values are in
+  `templates/default.conf.template`. Do not make them environment variables.
+- The CSP has `script-src 'self'`. Do not add an inline script or an inline event handler
+  to `public/index.html`. Add a new off-site host to the CSP in the template.
+- `GET /healthz` is the NGINX health check. It does not call the app.
+- Test: start the app, start the stock image with the files mounted (see the README), then
+  `BASE_URL=http://localhost:8080/ npm run test:e2e`.
+
 ### How the page gets its data
 
 The server only knows the stream URL. Track metadata and cover art are fetched by the
