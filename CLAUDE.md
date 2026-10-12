@@ -198,7 +198,11 @@ in `pages/`, and the harness in `support/`.
 
 - `security/exceptions.yaml` is the one exception file for all scanners. The ADR gives its format.
 - `security/trivy/checks/` holds the project checks for Trivy (Compose rules, digest pins,
-  service account token). A change to them needs a review by the Security Specialist.
+  service account token, literal secrets). A change to them needs a review by the Security
+  Specialist and a passing `security/trivy/test-checks.sh` (test data in `security/trivy/testdata/`).
+- `security/s6-gixy.sh <proxy-container> <output-prefix>` scans the NGINX config of a started
+  proxy container with gixy-ng (S6).
 - `security/edge-check.sh <base-url>` checks the headers, the CSP, the rate limits and the body
-  size of a running NGINX (S10). Run it after the E2E suite, because it causes `429` responses.
+  size of a running NGINX (S10). It needs Bash 4. Run it after the E2E suite, because it causes
+  `429` responses.
 - `.github/zizmor.yml` and `.github/codeql/codeql-config.yml` configure S9 and S8.
