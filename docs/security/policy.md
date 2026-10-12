@@ -21,7 +21,7 @@ The pipeline must scan each target in this table. Each row has a fail rule in se
 | ID | Target | What the scan examines |
 |---|---|---|
 | S1 | npm dependencies | All packages in `package-lock.json`, direct and transitive. |
-| S2 | OS packages of the images | The `runtime` image, the `proxy` image and the `e2e` image. |
+| S2 | OS packages of the images | The `runtime` image, the `proxy` image and the `e2e` image. Also the Postgres image that Compose and Kubernetes use (pinned by digest). |
 | S3 | Dockerfile | All stages of the multi-stage `Dockerfile`. |
 | S4 | Compose files | `compose.yaml` and all files in `deploy/compose/`. |
 | S5 | Kubernetes files | The rendered output of each Kustomize overlay in `deploy/k8s/`. |
@@ -45,7 +45,7 @@ The pipeline must scan each target in this table. Each row has a fail rule in se
 | ID | The scan fails when | The scan passes when |
 |---|---|---|
 | S1 | One or more CRITICAL or HIGH findings have a fix available. | The count of such findings is 0. |
-| S2 | One or more CRITICAL or HIGH findings in the `runtime` or `proxy` image have a fix available. | The count of such findings is 0. The scan reports findings in the `e2e` image only. The pipeline does not publish that image. |
+| S2 | One or more CRITICAL or HIGH findings in the `runtime` or `proxy` image have a fix available. | The count of such findings is 0. The scan reports findings in the `e2e` image and the Postgres image only. The pipeline does not publish these images. Issue #13 triages the findings of the Postgres image: a newer pinned digest, or an exception. |
 | S3 | One or more CRITICAL or HIGH misconfiguration findings occur, or a check of section 7 or 8.2 fails. | The count of such findings is 0. |
 | S4 | One or more CRITICAL or HIGH misconfiguration findings occur, or a check of section 7 fails. | The count of such findings is 0. |
 | S5 | One or more CRITICAL or HIGH misconfiguration findings occur, or a check of section 7 fails. | The count of such findings is 0. |
@@ -261,7 +261,7 @@ In Kubernetes, the cluster edge stops TLS (D11). The operator must apply the sam
 |---|---|---|
 | Each pull request into `main` | S1 to S11 | Mode of section 4. |
 | Each push to `main` | S1 to S11 | Mode of section 4. |
-| Each night | S1, S2, S7 and S11 against the latest published images (`main` and `latest` tags) | Report only. A new gate violation opens an issue with the label `security`. The issue holds only the finding ID, the target and the severity. |
+| Each night | S1, S2, S7 and S11 against the latest published images (`main` and `latest` tags). S2 also scans the pinned Postgres image. | Report only. A new gate violation opens an issue with the label `security`. The issue holds only the finding ID, the target and the severity. |
 
 New vulnerabilities appear after a release, so the night scan must use the published images and not a new build.
 
