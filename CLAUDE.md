@@ -195,6 +195,11 @@ steps for staging, production, backup and restore.
 - The image names in the manifests are `ghcr.io/batkomahno2008/radio-learning` and
   `ghcr.io/batkomahno2008/radio-learning-proxy`. Overlays and the deploy step set the tags
   with `images:` or `kustomize edit set image`. The Postgres image has a tag and a digest.
+  The base tag `main` can run a stale image on a node (`IfNotPresent`), so the deploy step
+  must set a real tag.
+- `kind load` only the two `:ci` images. The kind node pulls Postgres by its digest, so it
+  needs internet access (GitHub runners have it). For an offline node, see "Staging on
+  kind" in `deploy/k8s/README.md`: import the image, then tag it under its digest name.
 
 ```bash
 deploy/k8s/kind/db-env.sh                               # once, makes overlays/staging/db.env
@@ -203,7 +208,7 @@ kubectl kustomize deploy/k8s/overlays/staging | kubeconform -strict -summary -ku
 
 kind create cluster --config deploy/k8s/kind/cluster.yaml   # host port 8080 -> NGINX
 deploy/k8s/kind/install-calico.sh
-kind load docker-image radio-learning:ci radio-learning-proxy:ci postgres:18.6-alpine
+kind load docker-image radio-learning:ci radio-learning-proxy:ci --name radio-learning   # only these two
 kubectl apply -k deploy/k8s/overlays/staging
 kubectl --namespace radio-learning wait --for=condition=Ready pod --all --timeout=300s
 BASE_URL=http://localhost:8080/ npm run test:e2e        # use localhost, not another host name

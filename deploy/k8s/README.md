@@ -74,7 +74,7 @@ kind create cluster --config deploy/k8s/kind/cluster.yaml
 deploy/k8s/kind/install-calico.sh
 docker build --target runtime -t radio-learning:ci .
 docker build --target proxy -t radio-learning-proxy:ci .
-kind load docker-image radio-learning:ci radio-learning-proxy:ci postgres:18.6-alpine
+kind load docker-image radio-learning:ci radio-learning-proxy:ci --name radio-learning
 deploy/k8s/kind/db-env.sh                      # makes overlays/staging/db.env, Git ignores it
 kubectl apply -k deploy/k8s/overlays/staging
 kubectl --namespace radio-learning wait --for=condition=Ready pod --all --timeout=300s
@@ -85,7 +85,19 @@ kind delete cluster --name radio-learning
 
 - `cluster.yaml` maps the node port 30080 to the host port 8080 on 127.0.0.1. Change `hostPort` when port 8080 is busy.
 - Use `http://localhost:8080/` as `BASE_URL`. Chromium ignores the `Cross-Origin-Opener-Policy` header on plain HTTP with another host name, and the clean-console rule of the E2E suite then fails every scenario.
-- The Postgres image has a digest in the manifest. `kind load docker-image` can fail for an image with several platforms. Then use `docker save IMAGE | docker exec -i radio-learning-control-plane ctr --namespace=k8s.io images import --digests --snapshotter=overlayfs -`.
+- Load only the two `:ci` images. The node pulls the Postgres image by its digest from Docker Hub, so the machine needs internet access (GitHub runners have it). Do not run `kind load docker-image postgres:...`: a pull by digest does not make the tag in Docker, and with the containerd image store `kind load` can fail with `ctr: content digest ... not found`.
+- For a node with no internet access, put the Postgres image on the node under its digest name. A load by tag alone is not enough, because the manifests name the image by tag and digest and the kubelet then pulls it:
+
+  ```bash
+  IMAGE=postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+  docker pull "$IMAGE"
+  docker tag "$IMAGE" postgres:18.6-alpine        # the save command needs a tag
+  docker save postgres:18.6-alpine | docker exec -i radio-learning-control-plane \
+    ctr --namespace=k8s.io images import --digests --snapshotter=overlayfs -
+  docker exec radio-learning-control-plane ctr --namespace=k8s.io images tag \
+    docker.io/library/postgres:18.6-alpine \
+    docker.io/library/postgres@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+  ```
 - `install-calico.sh` checks the SHA-256 sum of the pinned Calico manifest. Set `CALICO_REGISTRY` to use a mirror of the images.
 - The staging overlay uses the tag `ci` and `imagePullPolicy: IfNotPresent`.
 - The `@live` scenarios run through this NGINX too: `STATION_ORIGINS` has the fake station and the real station.
@@ -108,7 +120,7 @@ kind delete cluster --name radio-learning
    - `httproute.yaml`: the `Gateway` (`name`, `namespace`, `sectionName`) and the host name.
    - `kustomization.yaml`: `REAL_IP_FROM`, the address range of the Gateway or Ingress controller pods. NGINX does not start with the placeholder, on purpose.
    - `base/streams.txt` and `STATION_ORIGINS` in `base/kustomization.yaml`: the stream list and the origin of each stream. Keep them the same.
-3. Set the image tags. Use a version tag or a digest, not `main`:
+3. Set the image tags. Use a version tag or a digest, not `main`. The base uses the tag `main`, and a pod with a tag runs with `imagePullPolicy: IfNotPresent`. A node that has an old `main` image keeps it, so the pods can run stale code. The deploy step must always set a real tag:
 
    ```bash
    cd deploy/k8s/overlays/prod
@@ -119,8 +131,11 @@ kind delete cluster --name radio-learning
 
 4. Apply: `kubectl apply -k deploy/k8s/overlays/prod`.
 
-The Gateway terminates TLS. NGINX and the app use plain HTTP in the cluster. The Gateway
-must keep the `Strict-Transport-Security` header that NGINX sends.
+The Gateway stops TLS. NGINX and the app use plain HTTP in the cluster. The Gateway
+must keep the `Strict-Transport-Security` header that NGINX sends. The Gateway must also:
+
+- Allow routes from the namespace `radio-learning`: set `allowedRoutes` on the listener (for example `namespaces.from: All`, or a selector for this namespace). Without it, the `HTTPRoute` is not accepted.
+- Send plain HTTP requests to HTTPS. The Gateway does this, not NGINX. NGINX on port 8080 serves the site and sends no redirect in this setup.
 
 ### A cluster without Gateway API
 
@@ -185,6 +200,7 @@ Use this to check a dump or to read old data. The live database does not change.
    spec:
      restartPolicy: Never
      automountServiceAccountToken: false
+     enableServiceLinks: false
      securityContext:
        runAsNonRoot: true
        runAsUser: 70
@@ -229,7 +245,8 @@ Use this to check a dump or to read old data. The live database does not change.
          persistentVolumeClaim:
            claimName: radio-learning-backup
        - name: tmp
-         emptyDir: {}
+         emptyDir:
+           sizeLimit: 64Mi
    ```
 
 3. Wait for the pod and read the log:
