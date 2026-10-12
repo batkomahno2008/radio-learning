@@ -93,7 +93,7 @@ serves the static files and sends `/api/*` to the app (epic #1, decision D12).
   `HOST:PORT`. It logs `Listening on ...`. A signal before `Listening on` closes the
   pool and exits 0. A signal after it stops new connections, lets open requests finish,
   closes the pool and exits 0. After 10 s, it exits 1. The keep-alive timeout (65 s)
-  is longer than the NGINX upstream idle time (60 s).
+  is longer than the NGINX upstream idle time (4 s, `keepalive_timeout` in the template).
 - Request headers: Node accepts 96 KiB (`maxHeaderSize`), because the largest valid
   `GET /api/ratings` (20 tracks of 500 characters) is about 90 KB. Keep this value the
   same as `large_client_header_buffers` in the NGINX config.
@@ -115,6 +115,26 @@ Environment variables (`.env.example` has all of them):
 
 `npm start` and `npm run dev` read `.env` when it exists. A variable that the shell
 sets has priority over `.env`.
+
+### NGINX proxy (`deploy/nginx/`)
+
+In deployments, NGINX is the entry point (epic #1, D12). It serves `public/` and the
+hls.js files at `/vendor/hls/`, and it sends `/api/*` to the app. `deploy/nginx/README.md`
+has the file layout, the mounts, the variables and the test commands.
+
+- Image: `nginxinc/nginx-unprivileged` (stable, alpine), pinned by digest. Port 8080 (HTTP)
+  and 8443 (HTTPS, only when `tls/tls.conf` is mounted). NGINX writes only to `/tmp`.
+- Variables: `APP_UPSTREAM` (default `app:3000`), `STATION_ORIGINS` (station origins for
+  the CSP) and `REAL_IP_FROM` (off by default). `15-radio-learning.envsh` checks them at start.
+- Edge controls: security headers and CSP on each answer, rate limits, connection limit,
+  16 KiB body limit, gzip and a JSON access log. All limit values are in
+  `templates/default.conf.template`. Do not make them environment variables.
+- The CSP has `script-src 'self'`. Do not add an inline script or an inline event handler
+  to `public/index.html`. Add a new off-site host to the CSP in the template.
+- `GET /healthz` is the NGINX health check. It does not call the app. Port 8080 also
+  serves `/.well-known/acme-challenge/` from `/var/www/acme` for certbot.
+- Test: start the app, start the stock image with the files mounted (see the README), then
+  `BASE_URL=http://localhost:8080/ npm run test:e2e`.
 
 ### How the page gets its data
 

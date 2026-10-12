@@ -1,0 +1,113 @@
+# HTTP-level settings and the HTTP server on port 8080 (issue #16).
+#
+# The envsubst step of the image writes this file to /tmp/nginx/conf.d/default.conf
+# at start. It replaces only the variables APP_UPSTREAM and STATION_ORIGINS
+# (NGINX_ENVSUBST_FILTER). 15-radio-learning.envsh sets their defaults and makes
+# sure that they are correct.
+
+# ---------------------------------------------------------------------------------
+# Edge limits. All values of docs/security/policy.md (9.3, 9.4) are in this block.
+# Do not move them to an environment variable: that is a contract change.
+# ---------------------------------------------------------------------------------
+
+# Rate limit keys. An empty key does not count, so each zone counts only its requests.
+# Reads: GET and HEAD on /api/. Writes: all other methods on /api/ (POST /api/ratings).
+map "$request_method:$uri" $limit_api_read_key {
+    "~^(GET|HEAD):/api/"    $binary_remote_addr;
+    default                 "";
+}
+map "$request_method:$uri" $limit_api_write_key {
+    "~^(GET|HEAD):/api/"    "";
+    "~^[^:]+:/api/"         $binary_remote_addr;
+    default                 "";
+}
+
+limit_req_zone $limit_api_write_key zone=api_write:10m rate=5r/s;
+limit_req_zone $limit_api_read_key  zone=api_read:10m  rate=20r/s;
+limit_conn_zone $binary_remote_addr zone=conn_per_ip:10m;
+
+limit_req zone=api_write burst=10 nodelay;
+limit_req zone=api_read  burst=40 nodelay;
+limit_conn conn_per_ip 20;
+
+limit_req_status 429;
+limit_conn_status 429;
+# The error log has the full request line, which holds the client id of the
+# listener. Write limit events at "info", below the "notice" level of the error
+# log. The access log still records each 429, with the path only.
+limit_req_log_level info;
+limit_conn_log_level info;
+
+# The largest valid request body is a rating of about 3.7 KB. Keep the body in memory.
+client_max_body_size 16k;
+client_body_buffer_size 16k;
+
+# The largest valid request line is GET /api/ratings with 20 tracks of 500 characters,
+# each percent-encoded with up to 9 bytes for each character: about 91 KB (audit N4).
+# One buffer must hold the full request line, so a buffer is 96k.
+large_client_header_buffers 4 96k;
+
+# Short timeouts limit the effect of slow clients.
+client_header_timeout 10s;
+client_body_timeout 10s;
+send_timeout 10s;
+reset_timedout_connection on;
+
+# ---------------------------------------------------------------------------------
+# Content Security Policy (docs/security/policy.md 9.2).
+# ---------------------------------------------------------------------------------
+# STATION_ORIGINS is the station host of the stream list. The browser reads the
+# metadata, the cover art and the HLS stream from it. hls.js makes its worker and
+# its media source from blob: URLs. The font hosts are accepted risk U1.
+map $host $content_security_policy {
+    default "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: ${STATION_ORIGINS}; media-src 'self' blob: ${STATION_ORIGINS}; connect-src 'self' ${STATION_ORIGINS}; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+}
+
+# Add upgrade-insecure-requests only on HTTPS. On plain HTTP it stops same-origin requests.
+map $https $content_security_policy_https {
+    on      "; upgrade-insecure-requests";
+    default "";
+}
+
+# ---------------------------------------------------------------------------------
+# Real client IP. The file sets set_real_ip_from only when REAL_IP_FROM is set.
+# 15-radio-learning.envsh writes it at start.
+# ---------------------------------------------------------------------------------
+include /tmp/nginx/real-ip.conf;
+
+# ---------------------------------------------------------------------------------
+# Compression of text answers (text/html is always in the list).
+# ---------------------------------------------------------------------------------
+gzip on;
+gzip_vary on;
+gzip_proxied any;
+gzip_min_length 256;
+gzip_comp_level 5;
+gzip_types text/css text/javascript application/javascript application/json image/svg+xml;
+
+# ---------------------------------------------------------------------------------
+# The Node app.
+# ---------------------------------------------------------------------------------
+upstream app_upstream {
+    server ${APP_UPSTREAM};
+    keepalive 16;
+    # Close idle connections before the app does (app: 65 s, Node default: 5 s, audit N8).
+    keepalive_timeout 4s;
+}
+
+# ---------------------------------------------------------------------------------
+# HTTP server. Without TLS it serves the site. With tls/tls.conf mounted, it sends
+# each request to HTTPS, but /healthz and the ACME challenge stay on HTTP.
+# ---------------------------------------------------------------------------------
+server {
+    listen 8080 default_server;
+    server_name _;
+
+    # For answers that NGINX makes before it selects a location (for example 400
+    # and 414). Each location includes the headers again.
+    include /etc/nginx/snippets/security-headers.conf;
+
+    include /etc/nginx/snippets/healthz.conf;
+    include /etc/nginx/snippets/acme-challenge.conf;
+    include /tmp/nginx/http-site.conf;
+}
