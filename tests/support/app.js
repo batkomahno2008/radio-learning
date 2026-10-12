@@ -22,7 +22,7 @@ function freePort() {
 // test run never reads or writes data/dev.db or stream_URL.txt.
 class App {
   async start() {
-    this.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'radiocalico-e2e-'));
+    this.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'radio-learning-e2e-'));
     this.dbPath = path.join(this.dir, 'test.db');
     this.streamsFile = path.join(this.dir, 'streams.txt');
     fs.writeFileSync(this.streamsFile, '');

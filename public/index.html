@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Radio Calico</title>
+  <title>Radio Learning</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600;700&family=Open+Sans:ital,wght@0,400;0,600;1,400&display=swap">
@@ -13,7 +13,7 @@
   <header>
     <span>Radio</span>
     <img src="/logo.png" alt="">
-    <span>Calico</span>
+    <span>Learning</span>
   </header>
 
   <main>
@@ -22,7 +22,7 @@
         <div class="art"><img id="cover" alt="" hidden></div>
 
         <div class="details">
-          <h1 id="artist">Radio Calico</h1>
+          <h1 id="artist">Radio Learning</h1>
           <h2 id="title">Live stream</h2>
           <h3 id="album" hidden></h3>
 
@@ -328,7 +328,7 @@
     coverEl.addEventListener('error', () => { coverEl.hidden = true; });
 
     function showMetadata(meta) {
-      setText('artist', meta.artist || 'Radio Calico');
+      setText('artist', meta.artist || 'Radio Learning');
       setText('title', (meta.title || 'Live stream') + (meta.date ? ` (${meta.date})` : ''));
       setText('album', meta.album || '');
       const source = [meta.bit_depth && `${meta.bit_depth}-bit`, meta.sample_rate && `${meta.sample_rate / 1000}kHz`].filter(Boolean).join(' ');
