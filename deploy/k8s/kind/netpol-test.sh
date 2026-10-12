@@ -13,6 +13,12 @@ OTHER_NS="${OTHER_NAMESPACE:-netpol-other}"
 IMAGE="postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873"
 
 kubectl get namespace "$OTHER_NS" > /dev/null 2>&1 || kubectl create namespace "$OTHER_NS" > /dev/null
+# Remove the test namespace and the test pod when the script ends, also after an error.
+cleanup() {
+  kubectl --namespace "$NS" delete pod netpol-probe --ignore-not-found --wait=false > /dev/null 2>&1 || true
+  kubectl delete namespace "$OTHER_NS" --ignore-not-found --wait=false > /dev/null 2>&1 || true
+}
+trap cleanup EXIT
 
 failures=0
 
@@ -42,6 +48,12 @@ spec:
     - name: probe
       image: $IMAGE
       imagePullPolicy: IfNotPresent
+      # The probe never passes, so the pod never becomes a Service endpoint and never
+      # counts for a PodDisruptionBudget, also when it has a workload label.
+      readinessProbe:
+        exec:
+          command: ["false"]
+        periodSeconds: 1
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
