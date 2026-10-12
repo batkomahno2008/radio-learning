@@ -166,6 +166,51 @@ one, rather than leaving the choice to bitrate-based switching.
 `RadioLearning_Layout.md` / `RadioLearningLayout.png` (target layout) are the source of
 truth for visual changes. The CSS custom properties in `styles.css` mirror the palette.
 
+## Kubernetes (`deploy/k8s/`)
+
+Plain manifests with Kustomize, no Helm (epic #1, D8). `deploy/k8s/README.md` has the
+steps for staging, production, backup and restore.
+
+- `base/` — namespace `radio-learning` (Pod Security `restricted`), NGINX
+  (`radio-learning-proxy`), the app (`radio-learning`), Postgres (StatefulSet `postgres`),
+  NetworkPolicies, PodDisruptionBudgets and the backup CronJob. The kustomization makes the
+  ConfigMaps `radio-learning-streams` (the stream list, mounted at `/config/streams.txt`)
+  and `radio-learning-proxy-env` (`APP_UPSTREAM`, `STATION_ORIGINS`, `REAL_IP_FROM`).
+- `overlays/staging/` — for kind: images `radio-learning:ci` and `radio-learning-proxy:ci`,
+  fake station stream list, NodePort 30080 on NGINX, small volumes. The Secret
+  `radio-learning-db` comes from `db.env`, which `kind/db-env.sh` makes. Git ignores it.
+- `overlays/prod/` — 2 replicas, `HTTPRoute` (Gateway API), placeholders for the Gateway, the
+  host name and `REAL_IP_FROM`. The Secret is not in Git (`kubectl create secret`, README).
+- `components/ingress/` — a generic `Ingress` that replaces the `HTTPRoute`. Never use the
+  retired `ingress-nginx` controller or its annotations.
+- `kind/` — `cluster.yaml`, `install-calico.sh` (kind needs Calico to enforce
+  NetworkPolicy), `db-env.sh` and `netpol-test.sh` (the R8 test).
+- Secret `radio-learning-db` keys: `DATABASE_URL`, `POSTGRES_USER`, `POSTGRES_DB`,
+  `POSTGRES_PASSWORD`. All pods run as non-root with a read-only root file system and
+  an `emptyDir` at `/tmp` (UID 1000 app, 101 NGINX, 70 Postgres).
+- Only the Service `radio-learning-proxy` is reachable from outside. The NetworkPolicies
+  let only the NGINX pods reach the app and only the app pods and the backup job reach
+  Postgres. Pods use the label `app.kubernetes.io/name` for this. Keep the labels when you
+  rename a workload.
+- The image names in the manifests are `ghcr.io/batkomahno2008/radio-learning` and
+  `ghcr.io/batkomahno2008/radio-learning-proxy`. Overlays and the deploy step set the tags
+  with `images:` or `kustomize edit set image`. The Postgres image has a tag and a digest.
+
+```bash
+deploy/k8s/kind/db-env.sh                               # once, makes overlays/staging/db.env
+kubectl kustomize deploy/k8s/overlays/staging           # also: overlays/prod
+kubectl kustomize deploy/k8s/overlays/staging | kubeconform -strict -summary -kubernetes-version 1.37.0
+
+kind create cluster --config deploy/k8s/kind/cluster.yaml   # host port 8080 -> NGINX
+deploy/k8s/kind/install-calico.sh
+kind load docker-image radio-learning:ci radio-learning-proxy:ci postgres:18.6-alpine
+kubectl apply -k deploy/k8s/overlays/staging
+kubectl --namespace radio-learning wait --for=condition=Ready pod --all --timeout=300s
+BASE_URL=http://localhost:8080/ npm run test:e2e        # use localhost, not another host name
+deploy/k8s/kind/netpol-test.sh                          # R8: who can reach app and Postgres
+kind delete cluster --name radio-learning
+```
+
 ## Tests
 
 There are two test suites. Each suite runs in a different place (epic #1, decisions D3 and D4).
