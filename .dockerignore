@@ -1,0 +1,28 @@
+# Files that no Docker stage needs. A smaller context builds faster and cannot
+# leak these files into an image. Keep tests/ and deploy/nginx/ in the context:
+# the test, e2e and proxy stages copy them.
+
+.git
+.claude
+.idea
+**/node_modules
+reports
+data
+docs
+
+# Secrets and local settings
+.env
+.env.*
+
+# Files of Compose and Kubernetes. No stage copies them.
+compose.yaml
+deploy/compose
+deploy/k8s
+deploy/nginx/tls/*.pem
+deploy/nginx/tls/*.key
+
+# Docker files and design files
+Dockerfile
+.dockerignore
+/*.png
+RadioLearning_*
