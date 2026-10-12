@@ -194,9 +194,9 @@ in `security/trivy/testdata/` and the unrendered files stay out of the gate.
 | S1 | `$T fs --scanners vuln --include-dev-deps --format sarif --output s1-npm.sarif /src` |
 | S2 | `$T image --scanners vuln --format sarif --output s2-runtime.sarif ghcr.io/batkomahno2008/radio-learning:sha-<short>`. The same for `s2-proxy` and `s2-e2e`. For `s2-postgres`, use the Postgres image with the digest that `compose.yaml` and `deploy/k8s/` pin. |
 | S3 | `$T $C --misconfig-scanners dockerfile --format sarif --output s3-dockerfile.sarif /src/Dockerfile` |
-| S4 (render) | For each stack: `docker compose -f compose.yaml config --no-interpolate > rendered/compose/compose.yaml`, `docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml config --no-interpolate > rendered/compose/compose-staging.yaml`, `docker compose -f compose.yaml -f deploy/compose/compose.tls.yaml config --no-interpolate > rendered/compose/compose-tls.yaml`. An override file alone is not a full service, so do not scan it alone. |
+| S4 (render) | For each stack (`compose`, `compose-staging`, `compose-tls`), render the full model, then write one file for each service. Example for the TLS stack: `docker compose -f compose.yaml -f deploy/compose/compose.tls.yaml config --no-interpolate --format json > tls.json`, then for each name in `jq -r '.services \| keys[]' tls.json`: `jq --arg s "$name" '{services: {($s): .services[$s]}}' tls.json > rendered/compose/compose-tls/$name.yaml` (JSON is valid YAML). An override file alone is not a full service, so do not scan it alone. (`docker compose config <service>` does not filter with `--no-interpolate`, so use `jq`.) |
 | S4 (scan) | `$T $C --misconfig-scanners yaml --format sarif --output s4-compose.sarif /src/rendered/compose` |
-| S5 (render) | `kustomize build deploy/k8s/overlays/staging > rendered/k8s/staging/all.yaml`, and the same for `prod`. |
+| S5 (render) | `kustomize build deploy/k8s/overlays/staging \| yq -s '"rendered/k8s/staging/" + .kind + "-" + .metadata.name'` (one file for each object; `yq` v4 is on the GitHub-hosted runners), and the same for `prod`. |
 | S5 (scan) | `$T $C --misconfig-scanners kubernetes --format sarif --output s5-k8s-staging.sarif /src/rendered/k8s/staging`, and the same for `prod`. |
 | S6 | Start the proxy (the `proxy` container of the Compose staging stack). Run `security/s6-gixy.sh <proxy-container> out/s6-nginx-http`. Then start a second proxy container with `deploy/nginx/tls/tls.conf` at `/etc/nginx/tls/tls.conf` and a test certificate at `/etc/nginx/certs/`, and run `security/s6-gixy.sh <tls-container> out/s6-nginx-tls`. The script fails when `/tmp/nginx/conf.d/default.conf` or `/tmp/nginx/http-site.conf` is missing. |
 | S7 history | `docker run --rm -v $PWD:/repo -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo $GITLEAKS git /repo --redact --no-banner --report-format sarif --report-path /repo/s7-history.sarif` (checkout with `fetch-depth: 0`. The image runs as root and the checkout has a different owner, so Git needs `safe.directory`. Fail the step when the log shows "0 commits scanned".) |
@@ -230,7 +230,9 @@ The test data has no value that looks like a real secret. Gitleaks gives 0 resul
 | `k8s-good` | Hardened Deployment, `valueFrom.secretKeyRef` | KSV-0125 x1 (trusted registries, MEDIUM, report only) |
 | `k8s-r9` | Literal `POSTGRES_PASSWORD` and a `DATABASE_URL` with a literal password in `env[].value`. `valueFrom`, a `_FILE` variable and a plain value in the other container. | RL-KS-003 x2 |
 
-Result on 2026-10-12: 9 of 9 cases pass.
+Result on 2026-10-12: 9 of 9 cases pass. The PoC also split the rendered `compose-bad` case into
+one file for each service (the S4 render step): the same 26 HIGH results, each on the file of its
+service (`app.yaml` 11, `db.yaml` 9, `proxy.yaml` 6).
 
 ## Proof of concept
 
@@ -368,6 +370,10 @@ checks of section 8 come from RL-DS-001, RL-DC-010, RL-KS-001 (S3, S4, S5) and f
   the maximum time after the date of the commit that added the entry, `finding` or `target` has `*`
   or `?`, or the `id` is not unique.
 - The gate treats an entry with a date in the past as not valid.
+- For S4 and S5, the gate step keys each result on the rendered file of one resource. Trivy gives
+  no resource name for these results (`CauseMetadata.Resource` is empty in the PoC), so the
+  render step must write one file for each service or object. A file that holds more than one
+  resource makes one exception cover all of them, which policy 5.1 forbids.
 - A `finding` with a line number stops to match after an edit that moves the line. Then the
   finding fails the gate again. This is safe, but it can cause work. SARIF `partialFingerprints`
   can help later.
@@ -381,7 +387,8 @@ Format of `finding` for each scanner:
 | Scanner | `finding` | Example |
 |---|---|---|
 | Trivy vulnerability (S1, S2) | The vulnerability ID | `CVE-2026-12345`, `GHSA-xxxx-xxxx-xxxx` |
-| Trivy config (S3, S4, S5) | `<check ID>@<file>` (the scanned file, for example a rendered file) | `KSV-0014@rendered/k8s/prod/all.yaml` |
+| Trivy config (S4, S5) | `<check ID>@<file>`. `<file>` is a rendered file that holds one resource only: one Compose service (S4) or one Kubernetes object (S5). The render step makes these files (see "Commands"). Thus one exception covers one check on one resource, as policy 5.1 needs. | `RL-DC-001@rendered/compose/compose-tls/db.yaml`, `KSV-0014@rendered/k8s/prod/StatefulSet-postgres.yaml` |
+| Trivy config (S3) | `<check ID>@Dockerfile:<line>` when the result has a line (for example RL-DS-001 on one `FROM` line), else `<check ID>@Dockerfile` | `RL-DS-001@Dockerfile:3`, `DS-0026@Dockerfile` |
 | gixy-ng (S6) | `<plugin>@<file>:<line>` (the repository file of the SARIF result) | `add_header_redefinition@deploy/nginx/templates/default.conf.template:42` |
 | Gitleaks history (S7) | The Gitleaks fingerprint `<commit>:<file>:<rule>:<line>` | `0a1b2c3...:server.js:generic-api-key:12` |
 | Gitleaks image (S7) | `<file>:<rule>:<line>` (path in the image) | `/usr/local/include/node/v8-internal.h:generic-api-key:187` |
@@ -418,8 +425,10 @@ first review of PR #22.
   #10 uses a different method.
 - #8 must name the NGINX service `proxy` in `compose.yaml`, or change `edge_services` in
   `security/trivy/checks/compose_r8_ports.rego`. With `--no-interpolate`, an image name such as
-  `${APP_IMAGE}` fails RL-DC-010, so write the image names literally. `docker compose config`
-  fails when an `env_file` is missing, so use `required: false` or make the file in CI.
+  `${APP_IMAGE}` fails RL-DC-010, so write the image names literally. With Compose v5.6.0,
+  `docker compose config --no-interpolate` does not fail when an `env_file` is missing (exit 0).
+  Without `--no-interpolate`, it fails (exit 1). Use `required: false` for env files, so that a
+  different Compose version or a run without `--no-interpolate` does not stop the render step.
 - S6 runs on a started proxy container, because the start script and the envsubst step write the
   config to `/tmp/nginx/`. It runs two times: without and with `tls/tls.conf`.
 - S4 scans the rendered Compose stacks. S5 scans the output of `kustomize build`, not the raw files.
