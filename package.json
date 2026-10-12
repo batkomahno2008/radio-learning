@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
     "dev": "node --env-file-if-exists=.env --watch server.js",
+    "test:api": "node --test --test-reporter=spec --experimental-test-coverage --test-coverage-lines=80 --test-coverage-include=app.js --test-coverage-include=config.js --test-coverage-include=db.js \"tests/api/*.test.js\"",
     "test:e2e": "cucumber-js",
     "test:e2e:smoke": "cucumber-js --tags @smoke",
     "test:e2e:live": "cucumber-js --profile live"
@@ -23,6 +24,8 @@
   "devDependencies": {
     "@cucumber/cucumber": "^13.3.0",
     "@playwright/test": "^1.64.0",
-    "playwright": "^1.64.0"
+    "pg-mem": "^3.0.14",
+    "playwright": "^1.64.0",
+    "supertest": "^7.3.1"
   }
 }
