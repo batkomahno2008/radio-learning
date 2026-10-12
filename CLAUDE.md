@@ -36,6 +36,8 @@ container and the volume (`docker rm -f radio-db && docker volume rm radio-db`).
 npm start                 # node server.js on http://localhost:3000; reads .env
 npm run dev               # same, restarting on file changes
 
+npm run test:api          # API tests on pg-mem (~3 s). They need no network and no Postgres
+
 # The e2e suite does not start the app. Start it first, in a different terminal,
 # with the fake station as its stream list:
 STREAMS_FILE=tests/fixtures/streams.txt npm start
@@ -144,7 +146,53 @@ one, rather than leaving the choice to bitrate-based switching.
 `RadioLearning_Layout.md` / `RadioLearningLayout.png` (target layout) are the source of
 truth for visual changes. The CSS custom properties in `styles.css` mirror the palette.
 
-## E2E tests (`tests/`)
+## Tests
+
+There are two test suites. Each suite runs in a different place (epic #1, decisions D3 and D4).
+
+| Suite | Command | Runs | Database |
+|---|---|---|---|
+| API tests (`tests/api/`) | `npm run test:api` | In the build, in the Dockerfile `test` stage | pg-mem, in memory |
+| E2E tests (`tests/features/` and others) | `npm run test:e2e` | On staging, through NGINX | The real Postgres |
+
+The API tests find faults in the HTTP API and in SQL early and fast. The E2E tests find
+faults in the full system. NGINX behavior (headers, rate limits) is not in the API tests.
+
+## API tests (`tests/api/`)
+
+The tests use the built-in `node:test` runner, `supertest` and `pg-mem`. They call the
+real `createApp()` and `migrate()` with a pg-mem pool. They need no network, no running
+server and no Postgres.
+
+- `helpers.js` — `createTestApp({ serveStatic, streamsText, trustProxy })` makes a new
+  pg-mem database, runs `migrate`, writes a temporary streams file and returns the app,
+  a `supertest` client (`api`), the pool and `close()`. Call it in `beforeEach` and call
+  `close()` in `afterEach`. `captureErrors(fn)` returns what the app writes to
+  `console.error` while `fn` runs.
+- `*.test.js` — one file for each area: `streams`, `ratings-get`, `ratings-post`,
+  `system` (health, ready, 404, error answers, static files, trust proxy), `config` and
+  `db` (`migrate`, `waitForDatabase`, `createPool`).
+- The runner starts each file in its own process. Each test makes its own database, so
+  files and tests share no state. `supertest` uses a free port, so no test uses a fixed port.
+- `npm run test:api` uses a glob (`"tests/api/*.test.js"`), not the directory `tests/api/`.
+  Node 22 treats a directory argument as a file name and fails. `helpers.js` is not a test file.
+- The script fails when line coverage is below 80%. Coverage counts `app.js`,
+  `config.js` and `db.js` only (`--test-coverage-include`). `server.js` starts a server
+  when `require` loads it, so the E2E tests cover it. Add each new app file to the script.
+- Add a test for each new route, each new rule of validation and each new SQL statement.
+  Check a new test: break the code on purpose, run the tests, and see the test fail.
+
+Limits of pg-mem (version 3.0.14), and what the tests do about them:
+
+- It has no `pg_advisory_xact_lock`. `createMemoryPool()` registers a function that does
+  nothing. The argument type is `integer`, because the key in `db.js` is an integer literal.
+- A second `migrate()` on the same database fails its AST coverage check. Run `migrate()`
+  once for each database. The test of idempotence uses `newDb({ noAstCoverageCheck: true })`.
+- It has no `FILTER (WHERE ...)`. The SQL uses `SUM(CASE WHEN ...)`. Keep the SQL simple.
+- It does not check what Postgres 18 does, for example locks and concurrent writes. The
+  E2E tests on staging check the real Postgres.
+
+## E2E tests (`tests/` except `tests/api/`)
 
 Cucumber scenarios in `features/`, step definitions in `steps/`, Playwright page objects
 in `pages/`, and the harness in `support/`.
