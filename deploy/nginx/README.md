@@ -139,6 +139,6 @@ For TLS, also mount `tls/tls.conf` at `/etc/nginx/tls/tls.conf` and a directory 
 `fullchain.pem` and `privkey.pem` at `/etc/nginx/certs`. Then test port 8443. Mount only
 `tls.conf` in `/etc/nginx/tls/`: each `*.conf` file there turns TLS on.
 
-The CSP has `script-src 'self'`, so the page must have no inline script. Issue #6 moves the
-client script to `public/app.js`. Before that change, the browser blocks the inline
-script of `public/index.html` behind NGINX.
+The CSP has `script-src 'self'`, so the page must have no inline script. The client
+script is in `public/app.js`. Do not add an inline script or an inline event handler to
+`public/index.html`, because the browser blocks it behind NGINX.
