@@ -2,6 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Writing standard
+
+Always use ASD-STE100 Simplified Technical English for all text that you write in this
+project. This includes replies, documentation, code comments, commit messages and
+pull request descriptions.
+
+- Use approved words only, and use each word with one meaning.
+- Use the active voice and the simple tenses.
+- Write a maximum of 20 words in an instruction and 25 words in a description.
+- Give one instruction in each sentence, and use the imperative form.
+- Write a maximum of six sentences in a paragraph.
+- Do not use noun clusters of more than three words.
+- Do not change code identifiers, commands, file names or quoted text.
+
 ## Commands
 
 Node version is pinned in `.nvmrc`. There is no build step and no linter.
