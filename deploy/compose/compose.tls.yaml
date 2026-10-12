@@ -1,0 +1,22 @@
+# TLS for the production stack (epic #1, decision D14). Issue #8.
+#
+#   CERTS_DIR=/etc/radio-learning/certs docker compose \
+#     -f compose.yaml -f deploy/compose/compose.tls.yaml up -d
+#
+# CERTS_DIR holds fullchain.pem and privkey.pem. The NGINX user (UID 101) must be
+# able to read privkey.pem (for example mode 0640 and group 101). Keep the
+# directory outside the repository.
+#
+# With tls.conf, NGINX sends each request on port 8080 to HTTPS. /healthz and
+# /.well-known/acme-challenge/ stay on HTTP. Publish port 80 and port 443, so the
+# redirect (which has no port) reaches the HTTPS server.
+# Without this file, the stack serves plain HTTP and needs no certificate.
+# Compose resolves the relative paths from the directory of compose.yaml.
+
+services:
+  proxy:
+    ports:
+      - "${HTTPS_PORT:-443}:8443"
+    volumes:
+      - ./deploy/nginx/tls/tls.conf:/etc/nginx/tls/tls.conf:ro
+      - ${CERTS_DIR:?Set CERTS_DIR to the directory with fullchain.pem and privkey.pem}:/etc/nginx/certs:ro
