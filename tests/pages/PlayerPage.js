@@ -50,6 +50,7 @@ class PlayerPage {
     await (await totals).finished();
   }
 
+  // title is the on-air title (see World.onAir); the page adds the year after it.
   async expectNowPlaying({ artist, title }) {
     await expect(this.artist).toHaveText(artist);
     await expect(this.title).toContainText(title);

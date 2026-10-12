@@ -5,7 +5,7 @@ const common = {
 };
 
 module.exports = {
-  // Deterministic suite: fake station feed, throwaway database.
+  // Deterministic suite: fake station feed, against the app and database at BASE_URL.
   default: { ...common, tags: 'not @wip and not @live' },
   // Scenarios that need the real station to be on air.
   live: { ...common, tags: '@live and not @wip' },

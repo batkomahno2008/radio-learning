@@ -24,17 +24,29 @@ Node version is pinned in `.nvmrc`. There is no build step and no linter.
 npm start                 # node server.js on http://localhost:3000 (PORT overrides)
 npm run dev               # same, restarting on file changes
 
-npm run test:e2e          # full Cucumber suite against a fake station (~5 s)
+# The e2e suite does not start the app. Start it first, in a different terminal,
+# with the fake station as its stream list and a temporary database:
+STREAMS_FILE=tests/fixtures/streams.txt DB_PATH=/tmp/radio-e2e.db npm start
+
+npm run test:e2e          # full Cucumber suite against a fake station (~10 s)
 npm run test:e2e:smoke    # only @smoke scenarios
 npm run test:e2e:live     # only @live scenarios, against the real station feed
 
 npx cucumber-js tests/features/ratings.feature:20        # one scenario, by line
 npx cucumber-js --name "Giving a thumbs up"              # one scenario, by name
 HEADED=1 SLOWMO=250 npm run test:e2e                     # watch it in a browser
+BASE_URL=http://staging:8080/ npm run test:e2e           # test a deployed app
 ```
 
 The e2e suite needs Playwright's Chromium once per machine:
-`sudo npx playwright install --with-deps chromium`.
+`sudo npx playwright install --with-deps chromium`. The suite uses the full Chromium
+(`channel: 'chromium'`), not the headless shell.
+
+E2E runner variables:
+- `BASE_URL` (default `http://localhost:3000/`): the app under test. On staging, this is
+  the NGINX entry point. The suite needs no other access to the app.
+- `LIVE_STREAM_URL` (default: the first stream in `stream_URL.txt`): the stream that
+  `@live` scenarios play.
 
 A failed run writes `reports/cucumber.html` with a full-page screenshot per listener.
 
@@ -86,13 +98,30 @@ truth for visual changes. The CSS custom properties in `styles.css` mirror the p
 Cucumber scenarios in `features/`, step definitions in `steps/`, Playwright page objects
 in `pages/`, and the harness in `support/`.
 
-- **Isolation:** `support/app.js` spawns `server.js` on a free port with a temporary
-  `DB_PATH` and `STREAMS_FILE`; a `Before` hook empties the `ratings` table. The suite
-  never touches `data/dev.db` or `stream_URL.txt`.
+- **App under test:** `support/app.js` reads `BASE_URL`. The suite does not start the
+  server, does not write its stream list and does not touch its database. So it can
+  run against a local `npm start` or a staging deployment, through NGINX.
+- **Isolation:** each scenario gets a random 6-character token. The fake station adds
+  it to each title that it serves, for example `Got to Be Real ~a1b2c3`. So each
+  scenario rates tracks that no other scenario or earlier run has rated, also on a
+  shared database. Production code has no test hooks.
+- **On-air names:** `World.onAir(name)` maps a track name from a step to the name on
+  the page. Use it for each track name, row text or title that goes to a page object.
+  Do not change the text of the `.feature` files to show tokens.
+- **Stream list:** deterministic scenarios use the stream list of the app. The app
+  must list `https://station.test/hls/live.m3u8` first (`tests/fixtures/streams.txt`).
+  A `Before` hook checks this once and stops with a clear message if it is wrong.
+  `@live` scenarios route `GET /api/streams` in the browser to `LIVE_STREAM_URL`.
 - **Fake station:** `support/station.js` intercepts `https://station.test/**` and serves
   metadata, cover art and a short silent FLAC stream from `fixtures/station/`. Steps such
   as `the station is playing "Artist - Title"` and `the station starts playing "..."`
-  control what is on air. Other off-site requests (web fonts) are stubbed.
+  control what is on air. Requests to other origins than `BASE_URL` (web fonts) are
+  stubbed.
+- **Secure context:** the page uses `crypto.randomUUID()`, which needs a secure context.
+  Chromium starts with `--unsafely-treat-insecure-origin-as-secure` for the `BASE_URL`
+  origin, because staging uses plain HTTP on a host name that is not `localhost`.
+  The flag hides a known product limit (audit N7). #6 removes the flag and the
+  `channel: 'chromium'` line when it adds a fallback for the client id.
 - **No waiting for polls:** each browser context has Playwright's clock installed;
   `PlayerPage.pollStation()` fast-forwards 10 seconds to trigger the next metadata poll.
 - **Listeners:** steps name an actor ("Alice", "Bob"). `World.player(name)` lazily opens
@@ -103,8 +132,9 @@ in `pages/`, and the harness in `support/`.
   `Thumbs up for Artist - Title`), so renaming an `aria-label` in `index.html` breaks
   the page objects.
 - **Clean-console rule:** a passing scenario is failed in the `After` hook if the page
-  logged a console error, threw, or got a non-2xx answer from the app. `@live` scenarios
-  are exempt and use the real stream and the real clock.
+  logged a console error, threw, or got a non-2xx answer from the `BASE_URL` origin.
+  Chromium logs a CSP violation as a console error, so a CSP violation also fails the
+  scenario. `@live` scenarios are exempt and use the real stream and the real clock.
 - `RatingWidget.vote()` waits for the POST to finish before returning; keep that when
   adding steps that click thumbs back to back, because of the click-ignoring rule above.
 - Tags: `@smoke`, `@live` (excluded from the default profile), `@wip` (always excluded).
