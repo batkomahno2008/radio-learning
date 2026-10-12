@@ -80,7 +80,8 @@ has the file layout, the mounts, the variables and the test commands.
   `templates/default.conf.template`. Do not make them environment variables.
 - The CSP has `script-src 'self'`. Do not add an inline script or an inline event handler
   to `public/index.html`. Add a new off-site host to the CSP in the template.
-- `GET /healthz` is the NGINX health check. It does not call the app.
+- `GET /healthz` is the NGINX health check. It does not call the app. Port 8080 also
+  serves `/.well-known/acme-challenge/` from `/var/www/acme` for certbot.
 - Test: start the app, start the stock image with the files mounted (see the README), then
   `BASE_URL=http://localhost:8080/ npm run test:e2e`.
 

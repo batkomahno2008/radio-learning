@@ -15,12 +15,13 @@ NGINX runs as UID 101 and listens on port 8080 (HTTP) and 8443 (HTTPS).
 |---|---|---|
 | `nginx.conf` | `/etc/nginx/nginx.conf` | Main file: workers, JSON access log, temporary paths in `/tmp`, `server_tokens off`. |
 | `templates/default.conf.template` | `/etc/nginx/templates/default.conf.template` | Edge limits, CSP, gzip, upstream and the HTTP server on 8080. The envsubst step of the image writes it to `/tmp/nginx/conf.d/default.conf`. |
-| `snippets/*.conf` | `/etc/nginx/snippets/` | Locations of the site, `/healthz`, the HTTPS redirect and the security headers. |
+| `snippets/*.conf` | `/etc/nginx/snippets/` | Locations of the site, `/healthz`, the ACME challenge, the HTTPS redirect and the security headers. |
 | `docker-entrypoint.d/15-radio-learning.envsh` | `/docker-entrypoint.d/15-radio-learning.envsh` | Start script. It must have the execute bit. See "Start" below. |
 | `tls/tls.conf` | `/etc/nginx/tls/tls.conf` | HTTPS server on 8443. Mount it only in Compose with TLS (D14). Do not put it in the image. |
 | `public/` (repository root) | `/usr/share/nginx/html/` | Static files. |
 | `node_modules/hls.js/dist/` | `/usr/share/nginx/vendor/hls/` | Served at `/vendor/hls/`. |
 | Certificate files (not in Git) | `/etc/nginx/certs/fullchain.pem`, `/etc/nginx/certs/privkey.pem` | Only with `tls/tls.conf`. UID 101 must be able to read the key. |
+| certbot webroot (not in Git) | `/var/www/acme/` (read-only) | Optional. See "Certificates with certbot". |
 
 NGINX writes only to `/tmp`. Mount a writable `tmpfs` or `emptyDir` at `/tmp` and keep the
 root file system read-only. `/etc/nginx/conf.d` does not have to be writable.
@@ -30,11 +31,11 @@ root file system read-only. `/etc/nginx/conf.d` does not have to be writable.
 | Name | Default | Notes |
 |---|---|---|
 | `APP_UPSTREAM` | `app:3000` | `host:port` of the Node app. Kubernetes: `radio-learning:80`. NGINX finds the address of the host name one time, at start. |
-| `STATION_ORIGINS` | – (empty) | Space-separated origins of the station host, for the CSP (`img-src`, `media-src`, `connect-src`). Staging: `https://station.test`. Production: the origin of the stream in `STREAMS_FILE`. When it is empty, the player cannot play. |
+| `STATION_ORIGINS` | – (empty) | Space-separated `https://` origins of the station host, for the CSP (`img-src`, `media-src`, `connect-src`). Staging: `https://station.test`. Production: the origin of the stream in `STREAMS_FILE`. When it is empty, the player cannot play. |
 | `REAL_IP_FROM` | – (off) | Space-separated addresses or CIDR ranges of the cluster edge. When it is set, NGINX reads the client IP from `X-Forwarded-For`, but only for requests from these addresses. |
 
 The values go into the NGINX config, so the start script accepts only the expected
-characters. A wrong value stops the container with an error message.
+characters, and only one line. A wrong value stops the container with an error message.
 
 ## Start
 
@@ -42,12 +43,15 @@ characters. A wrong value stops the container with an error message.
 order before NGINX starts. `15-radio-learning.envsh`:
 
 1. Sets the defaults above and checks the values.
-2. Sets `NGINX_ENVSUBST_OUTPUT_DIR=/tmp/nginx/conf.d` for the envsubst step.
+2. Sets `NGINX_ENVSUBST_OUTPUT_DIR=/tmp/nginx/conf.d` for the envsubst step, and
+   `NGINX_ENVSUBST_FILTER` so that envsubst replaces only `APP_UPSTREAM` and
+   `STATION_ORIGINS`.
 3. Writes `/tmp/nginx/real-ip.conf`: `set_real_ip_from` lines when `REAL_IP_FROM` is set,
    else no directive.
-4. Writes `/tmp/nginx/http-site.conf`. Without `tls/tls.conf`, port 8080 serves the site.
-   With `tls/tls.conf`, port 8080 sends each request to `https://<host>/` with `301`,
-   but `/healthz` stays on HTTP.
+4. Writes `/tmp/nginx/http-site.conf`. When `/etc/nginx/tls/` has no `*.conf` file, port
+   8080 serves the site. When it has one (`nginx.conf` includes the same files), port
+   8080 sends each request to `https://<host>/` with `301`, but `/healthz` and
+   `/.well-known/acme-challenge/` stay on HTTP.
 
 Then `20-envsubst-on-templates.sh` of the image writes the template.
 
@@ -71,18 +75,40 @@ environment variable. That changes the shared contracts (epic #1, rule 10).
 NGINX sends HSTS also on plain HTTP. Browsers ignore it there. In Kubernetes, the cluster
 edge must keep the header.
 
+The error log (level `notice`) has the full request line of a failed upstream request,
+which can hold the client id of the listener. The rate limit and connection limit events
+are at level `info`, so the error log does not record them. The access log records each
+`429` with the path only.
+
 `/api/` requests get these headers: `Host`, `X-Forwarded-For` (only the client IP that
 NGINX found, not the value from the client), `X-Forwarded-Proto` and `X-Request-ID`.
 The access log has the same request id. The log has the path without the query string,
 because the query string holds the client id of the listener.
 
+## Certificates with certbot
+
+Use the webroot mode of certbot. Port 8080 serves `/.well-known/acme-challenge/` from
+`/var/www/acme`, also when TLS is on. Mount the certbot webroot directory there,
+read-only. NGINX cannot start with `tls/tls.conf` and no certificate files, so get the
+first certificate in plain HTTP mode:
+
+1. Start NGINX without `tls/tls.conf`, with the webroot directory mounted at `/var/www/acme`.
+2. Run `certbot certonly --webroot -w <webroot directory> -d <domain>`.
+3. Give the key file to UID 101 (or its group), mode `0600` or `0640`.
+4. Mount `tls/tls.conf` and the certificate directory, and start NGINX again.
+
+Renewals use the same webroot while TLS is on. Reload NGINX after a renewal
+(`nginx -s reload`).
+
 ## Test the config
 
-Use the stock image with the files of this directory mounted. Start the app first:
+Use the stock image with the files of this directory mounted. Start the app first
+(the app of issue #6; before #6, the app uses `DB_PATH` and needs no `DATABASE_URL`):
 
 ```bash
 npm ci
-STREAMS_FILE=tests/fixtures/streams.txt DB_PATH=/tmp/radio-e2e.db npm start
+DATABASE_URL=postgres://radio:change-me@127.0.0.1:5432/radio \
+  STREAMS_FILE=tests/fixtures/streams.txt SERVE_STATIC=false TRUST_PROXY=1 npm start
 ```
 
 Then start NGINX in a different terminal (host network, so `127.0.0.1:3000` is the app):
@@ -110,7 +136,8 @@ BASE_URL=http://localhost:8080/ npm run test:e2e      # E2E suite through NGINX
 ```
 
 For TLS, also mount `tls/tls.conf` at `/etc/nginx/tls/tls.conf` and a directory with
-`fullchain.pem` and `privkey.pem` at `/etc/nginx/certs`. Then test port 8443.
+`fullchain.pem` and `privkey.pem` at `/etc/nginx/certs`. Then test port 8443. Mount only
+`tls.conf` in `/etc/nginx/tls/`: each `*.conf` file there turns TLS on.
 
 The CSP has `script-src 'self'`, so the page must have no inline script. Issue #6 moves the
 client script to `public/app.js`. Before that change, the browser blocks the inline

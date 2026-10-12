@@ -1,10 +1,9 @@
 # HTTP-level settings and the HTTP server on port 8080 (issue #16).
 #
 # The envsubst step of the image writes this file to /tmp/nginx/conf.d/default.conf
-# at start. It replaces ${APP_UPSTREAM} and ${STATION_ORIGINS}.
-# 15-radio-learning.envsh sets their defaults and makes sure that they are correct.
-# Use only lowercase NGINX variables in this file. envsubst can replace a variable
-# that has the same name as an environment variable.
+# at start. It replaces only the variables APP_UPSTREAM and STATION_ORIGINS
+# (NGINX_ENVSUBST_FILTER). 15-radio-learning.envsh sets their defaults and makes
+# sure that they are correct.
 
 # ---------------------------------------------------------------------------------
 # Edge limits. All values of docs/security/policy.md (9.3, 9.4) are in this block.
@@ -33,8 +32,11 @@ limit_conn conn_per_ip 20;
 
 limit_req_status 429;
 limit_conn_status 429;
-limit_req_log_level warn;
-limit_conn_log_level warn;
+# The error log has the full request line, which holds the client id of the
+# listener. Write limit events at "info", below the "notice" level of the error
+# log. The access log still records each 429, with the path only.
+limit_req_log_level info;
+limit_conn_log_level info;
 
 # The largest valid request body is a rating of about 3.7 KB. Keep the body in memory.
 client_max_body_size 16k;
@@ -95,7 +97,7 @@ upstream app_upstream {
 
 # ---------------------------------------------------------------------------------
 # HTTP server. Without TLS it serves the site. With tls/tls.conf mounted, it sends
-# each request to HTTPS, but /healthz stays on HTTP.
+# each request to HTTPS, but /healthz and the ACME challenge stay on HTTP.
 # ---------------------------------------------------------------------------------
 server {
     listen 8080 default_server;
@@ -106,5 +108,6 @@ server {
     include /etc/nginx/snippets/security-headers.conf;
 
     include /etc/nginx/snippets/healthz.conf;
+    include /etc/nginx/snippets/acme-challenge.conf;
     include /tmp/nginx/http-site.conf;
 }

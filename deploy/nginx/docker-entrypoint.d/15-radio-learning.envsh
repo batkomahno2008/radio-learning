@@ -29,13 +29,32 @@ REAL_IP_FROM="${REAL_IP_FROM:-}"
 
 # The values go into the NGINX config, so accept only the expected characters.
 # A wrong value must not add NGINX directives.
-printf '%s' "$APP_UPSTREAM" | grep -Eq '^[A-Za-z0-9._-]+:[0-9]{1,5}$|^\[[0-9A-Fa-f:.]+\]:[0-9]{1,5}$' ||
-    rl_fail "APP_UPSTREAM must be host:port (for example app:3000), not '$APP_UPSTREAM'"
+rl_nl='
+'
 
+# rl_check NAME VALUE PATTERN TEXT: stop the start when VALUE has a newline or
+# does not agree with the extended regular expression PATTERN. grep examines each
+# line, so the newline check must come first.
+rl_check() {
+    case "$2" in
+        *"$rl_nl"*) rl_fail "$1 must be on one line. $4" ;;
+    esac
+    printf '%s\n' "$2" | grep -Eq "$3" || rl_fail "$1: $4 The value is '$2'."
+}
+
+rl_check APP_UPSTREAM "$APP_UPSTREAM" \
+    '^([A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\]):[0-9]{1,5}$' \
+    'Use host:port, for example app:3000.'
+rl_check STATION_ORIGINS "$STATION_ORIGINS" \
+    '^ *(https://(\*\.)?[A-Za-z0-9.-]+(:[0-9]{1,5})?( +|$))*$' \
+    'Use a space-separated list of https origins, for example https://station.test.'
+rl_check REAL_IP_FROM "$REAL_IP_FROM" \
+    '^ *([0-9A-Fa-f:.]+(/[0-9]{1,3})?( +|$))*$' \
+    'Use a space-separated list of addresses or CIDR ranges, for example 10.0.0.0/8.'
+
+# Write the origins with one space between them.
 rl_origins=""
 for rl_origin in $STATION_ORIGINS; do
-    printf '%s' "$rl_origin" | grep -Eq '^https?://(\*\.)?[A-Za-z0-9.-]+(:[0-9]{1,5})?$' ||
-        rl_fail "STATION_ORIGINS must be a space-separated list of origins (for example https://station.test), not '$rl_origin'"
     rl_origins="${rl_origins:+$rl_origins }$rl_origin"
 done
 STATION_ORIGINS="$rl_origins"
@@ -43,15 +62,13 @@ if [ -z "$STATION_ORIGINS" ]; then
     rl_log "WARNING: STATION_ORIGINS is empty. The CSP blocks the station host, so the player cannot play."
 fi
 
-for rl_range in $REAL_IP_FROM; do
-    printf '%s' "$rl_range" | grep -Eq '^[0-9A-Fa-f:.]+(/[0-9]{1,3})?$' ||
-        rl_fail "REAL_IP_FROM must be a space-separated list of addresses or CIDR ranges, not '$rl_range'"
-done
-
 export APP_UPSTREAM STATION_ORIGINS REAL_IP_FROM
 
 # The envsubst step writes the templates here. nginx.conf includes this directory.
 export NGINX_ENVSUBST_OUTPUT_DIR=/tmp/nginx/conf.d
+# envsubst replaces only these variables. Another environment variable cannot
+# change an NGINX variable with the same name in the template.
+export NGINX_ENVSUBST_FILTER='^(APP_UPSTREAM|STATION_ORIGINS)$'
 mkdir -p "$NGINX_ENVSUBST_OUTPUT_DIR"
 
 # Real client IP: trust X-Forwarded-For only from REAL_IP_FROM (cluster edge).
@@ -71,8 +88,9 @@ else
     rl_log "REAL_IP_FROM is not set: the client IP is the peer address"
 fi
 
-# HTTP server: serve the site, or send each request to HTTPS when tls.conf is mounted.
-if [ -f /etc/nginx/tls/tls.conf ]; then
+# HTTP server: serve the site, or send each request to HTTPS when a TLS file is
+# mounted. Use the same rule as nginx.conf, which includes /etc/nginx/tls/*.conf.
+if find /etc/nginx/tls/ -maxdepth 1 -name '*.conf' 2>/dev/null | grep -q .; then
     rl_site=https-redirect.conf
     rl_log "TLS on: port 8443 serves the site, port 8080 sends requests to HTTPS"
 else
@@ -81,6 +99,8 @@ else
 fi
 echo "include /etc/nginx/snippets/$rl_site;" > /tmp/nginx/http-site.conf
 
-unset rl_origins rl_origin rl_range rl_site
-unset -f rl_log rl_fail
-set +f
+unset rl_nl rl_origins rl_origin rl_range rl_site
+unset -f rl_log rl_fail rl_check
+# This file is sourced. Give the shell options back to the entrypoint. Keep -e,
+# because the entrypoint sets it.
+set +f +u
