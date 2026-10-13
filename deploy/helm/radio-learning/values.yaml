@@ -1,0 +1,79 @@
+# Default values. They give a staging-like stack: HTTP only, reachable on the network.
+
+images:
+  app:
+    repository: ghcr.io/batkomahno2008/radio-learning
+    # Empty: use appVersion of the chart. Pin a "sha-<short>" tag or a release tag.
+    tag: ""
+  proxy:
+    repository: ghcr.io/batkomahno2008/radio-learning-proxy
+    tag: ""
+  postgres: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+  pullPolicy: IfNotPresent
+
+# Names of Secrets (type kubernetes.io/dockerconfigjson) if the GHCR images are private.
+imagePullSecrets: []
+
+# The stream list of the app. One stream URL on each line.
+streams:
+  - https://d3d4yli4hf5bmh.cloudfront.net/hls/live.m3u8
+
+# The CSP of NGINX. It must hold the https origin of each stream above.
+stationOrigins:
+  - https://d3d4yli4hf5bmh.cloudfront.net
+
+# Addresses of the load balancer in front of NGINX (NGINX real_ip_from). Empty: off.
+realIpFrom: []
+
+# How users reach NGINX. HTTP only, no TLS.
+service:
+  # NodePort: http://<node-ip>:<nodePort>. LoadBalancer: http://<external-ip>:<port>.
+  type: NodePort
+  port: 80
+  # Empty: Kubernetes picks a port. Otherwise use a port from 30000 to 32767.
+  nodePort: 30080
+  annotations: {}
+
+proxy:
+  replicas: 1
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+
+app:
+  replicas: 1
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+
+database:
+  name: radio
+  user: radio
+  # Empty: the chart makes a random password once and keeps it on upgrade.
+  password: ""
+  # Name of an own Secret with the keys DATABASE_URL, POSTGRES_USER, POSTGRES_DB and
+  # POSTGRES_PASSWORD. If set, the chart makes no Secret.
+  existingSecret: ""
+  storage:
+    size: 5Gi
+    # Empty: the default storage class of the cluster.
+    storageClass: ""
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}
+
+# Daily pg_dump to its own volume. Keeps the 7 newest files.
+backup:
+  enabled: true
+  schedule: "17 3 * * *"
+  storage:
+    size: 5Gi
+    storageClass: ""
+
+# Needs a network plugin that enforces NetworkPolicy. Without one, it has no effect.
+networkPolicy:
+  enabled: true
+
+# Use with 2 or more replicas.
+podDisruptionBudget:
+  enabled: false

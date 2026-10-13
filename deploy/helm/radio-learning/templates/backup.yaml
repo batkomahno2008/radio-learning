@@ -1,0 +1,101 @@
+{{- if .Values.backup.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "rl.name" . }}-backup
+  labels:
+    {{- include "rl.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.backup.storage.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.storage.size }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "rl.name" . }}-backup
+  labels:
+    {{- include "rl.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 604800
+      template:
+        metadata:
+          labels:
+            {{- include "rl.labels" . | nindent 12 }}
+            {{- include "rl.sel" (dict "root" . "name" "radio-learning-backup") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          {{- include "rl.pullSecrets" . | nindent 10 }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            fsGroup: 70
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile: {type: RuntimeDefault}
+          containers:
+            - name: pg-dump
+              image: {{ .Values.images.postgres }}
+              imagePullPolicy: {{ .Values.images.pullPolicy }}
+              env:
+                - {name: PGHOST, value: {{ printf "%s-postgres" (include "rl.name" .) }}}
+                - {name: PGPORT, value: "5432"}
+                - {name: PGCONNECT_TIMEOUT, value: "10"}
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef: {name: {{ include "rl.secretName" . }}, key: POSTGRES_USER}
+                - name: PGDATABASE
+                  valueFrom:
+                    secretKeyRef: {name: {{ include "rl.secretName" . }}, key: POSTGRES_DB}
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef: {name: {{ include "rl.secretName" . }}, key: POSTGRES_PASSWORD}
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  umask 077
+                  cd /backups
+                  rm -f -- ./*.dump.tmp
+                  name="radio-learning-$(date -u +%Y%m%dT%H%M%SZ).dump"
+                  pg_dump --format=custom --file="$name.tmp"
+                  pg_restore --list "$name.tmp" > /dev/null
+                  mv -- "$name.tmp" "$name"
+                  ls -1t -- ./radio-learning-*.dump | tail -n +8 | xargs -r rm -f --
+                  ls -l -- ./radio-learning-*.dump
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: ["ALL"]}
+              resources:
+                requests: {cpu: 50m, memory: 64Mi}
+                limits: {cpu: 500m, memory: 256Mi}
+              volumeMounts:
+                - {name: backup, mountPath: /backups}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: {{ include "rl.name" . }}-backup
+            - name: tmp
+              emptyDir: {sizeLimit: 64Mi}
+{{- end }}

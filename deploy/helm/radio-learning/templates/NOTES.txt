@@ -1,0 +1,7 @@
+Radio Learning is installed (HTTP only).
+{{- if eq .Values.service.type "NodePort" }}
+Open: http://<node-ip>:{{ .Values.service.nodePort | default "<node-port>" }}/
+{{- else if eq .Values.service.type "LoadBalancer" }}
+Get the address: kubectl -n {{ .Release.Namespace }} get svc {{ include "rl.name" . }}-proxy
+{{- end }}
+Wait for the pods: kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "rl.name" . }}-proxy
