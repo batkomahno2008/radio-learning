@@ -12,13 +12,27 @@ OTHER_NS="${OTHER_NAMESPACE:-netpol-other}"
 # The image of the StatefulSet: it has wget and pg_isready.
 IMAGE="postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873"
 
-kubectl get namespace "$OTHER_NS" > /dev/null 2>&1 || kubectl create namespace "$OTHER_NS" > /dev/null
-# Remove the test namespace and the test pod when the script ends, also after an error.
+# The script deletes the second namespace at the end only when it made the namespace.
+# A namespace that exists before the run stays, with all its content.
+created_ns=0
 cleanup() {
   kubectl --namespace "$NS" delete pod netpol-probe --ignore-not-found --wait=false > /dev/null 2>&1 || true
-  kubectl delete namespace "$OTHER_NS" --ignore-not-found --wait=false > /dev/null 2>&1 || true
+  if [ "$created_ns" -eq 1 ]; then
+    kubectl delete namespace "$OTHER_NS" --ignore-not-found --wait=false > /dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
+
+# A namespace that an earlier run deleted can still be in the state Terminating.
+# Wait until it is gone (120 s at most), then make it again.
+if [ "$(kubectl get namespace "$OTHER_NS" -o jsonpath='{.status.phase}' 2> /dev/null || true)" = "Terminating" ]; then
+  echo "Namespace $OTHER_NS is terminating. Wait until it is gone."
+  kubectl wait --for=delete "namespace/$OTHER_NS" --timeout=120s > /dev/null
+fi
+if ! kubectl get namespace "$OTHER_NS" > /dev/null 2>&1; then
+  kubectl create namespace "$OTHER_NS" > /dev/null
+  created_ns=1
+fi
 
 failures=0
 
@@ -48,8 +62,9 @@ spec:
     - name: probe
       image: $IMAGE
       imagePullPolicy: IfNotPresent
-      # The probe never passes, so the pod never becomes a Service endpoint and never
-      # counts for a PodDisruptionBudget, also when it has a workload label.
+      # The probe never passes, so the pod never becomes a Service endpoint, also when it
+      # has a workload label. The pod does not count as healthy for a PodDisruptionBudget,
+      # but the PDB controller can still log an UnmanagedPods warning for it.
       readinessProbe:
         exec:
           command: ["false"]
