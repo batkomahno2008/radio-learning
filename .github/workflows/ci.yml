@@ -34,6 +34,9 @@ concurrency:
 env:
   APP_IMAGE: ghcr.io/batkomahno2008/radio-learning
   PROXY_IMAGE: ghcr.io/batkomahno2008/radio-learning-proxy
+  # docker/build-push-action: keep the build summary, but upload no build record
+  # artifact for each build. The run then shows only the artifacts of this workflow.
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
   # kubeconform: change the version and the SHA-256 sum together.
   KUBECONFORM_VERSION: v0.8.0
   KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
