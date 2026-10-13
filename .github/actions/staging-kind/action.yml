@@ -1,0 +1,140 @@
+# Temporary staging on a kind cluster (epic #1, decisions D1 and D8). Issue #10.
+#
+# This action deploys, collects logs and removes the cluster. It runs no test.
+# The images radio-learning:ci and radio-learning-proxy:ci must be in the local
+# Docker store (docker load) before "up". The node pulls Postgres by its digest.
+#
+#   command: up    installs kind and kubectl, makes the cluster, installs Calico,
+#                  loads the two images, applies the staging overlay and waits
+#   command: logs  writes the pod logs and the events to log-dir
+#   command: down  deletes the cluster
+#
+# deploy/k8s/kind/cluster.yaml maps the NGINX node port 30080 to 127.0.0.1:8080.
+# Each run gets a random Postgres password (deploy/k8s/kind/db-env.sh).
+name: Staging on kind
+description: Deploy, read logs of, or remove the staging overlay on a kind cluster.
+
+inputs:
+  command:
+    description: "up, logs or down."
+    required: true
+  cluster-name:
+    description: "The name of the kind cluster."
+    required: false
+    default: "radio-learning"
+  cluster-config:
+    description: "The kind cluster file."
+    required: false
+    default: "deploy/k8s/kind/cluster.yaml"
+  log-dir:
+    description: "The directory for the logs (command logs)."
+    required: false
+    default: "staging-logs"
+
+outputs:
+  network:
+    description: "The Docker network for the E2E container."
+    value: ${{ steps.up.outputs.network }}
+  base-url:
+    description: "BASE_URL for the E2E container. It is a loopback origin (decision on PR #24)."
+    value: ${{ steps.up.outputs.base-url }}
+  host-url:
+    description: "The NGINX address on the runner."
+    value: ${{ steps.up.outputs.host-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the command
+      shell: bash
+      env:
+        COMMAND: ${{ inputs.command }}
+      run: |
+        case "$COMMAND" in
+          up|logs|down) ;;
+          *) echo "::error::Unknown command '$COMMAND'. Use up, logs or down."; exit 1 ;;
+        esac
+
+    - name: Install kind and kubectl
+      if: inputs.command == 'up'
+      shell: bash
+      env:
+        # kind v0.33.0 makes Kubernetes 1.37.0 by default, the version of cluster.yaml.
+        # Change each version together with its SHA-256 sum.
+        KIND_VERSION: v0.33.0
+        KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+        KUBECTL_VERSION: v1.37.0
+        KUBECTL_SHA256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+      run: |
+        set -euo pipefail
+        bin="$RUNNER_TEMP/staging-kind-bin"
+        mkdir -p "$bin"
+        curl -fsSL --retry 3 -o "$bin/kind" \
+          "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+        curl -fsSL --retry 3 -o "$bin/kubectl" \
+          "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+        echo "${KIND_SHA256}  $bin/kind" | sha256sum -c -
+        echo "${KUBECTL_SHA256}  $bin/kubectl" | sha256sum -c -
+        chmod 0755 "$bin/kind" "$bin/kubectl"
+        echo "$bin" >> "$GITHUB_PATH"
+
+    - name: Deploy the staging overlay
+      id: up
+      if: inputs.command == 'up'
+      shell: bash
+      env:
+        CLUSTER: ${{ inputs.cluster-name }}
+        CLUSTER_CONFIG: ${{ inputs.cluster-config }}
+      run: |
+        set -euo pipefail
+        kind version
+        kubectl version --client
+        kind create cluster --name "$CLUSTER" --config "$CLUSTER_CONFIG"
+        deploy/k8s/kind/install-calico.sh
+        # Load only the two images of this run. Do not load Postgres
+        # (deploy/k8s/README.md, "Staging on kind").
+        kind load docker-image radio-learning:ci radio-learning-proxy:ci --name "$CLUSTER"
+        deploy/k8s/kind/db-env.sh
+        kubectl apply -k deploy/k8s/overlays/staging
+        kubectl --namespace radio-learning rollout status statefulset/postgres --timeout=300s
+        kubectl --namespace radio-learning rollout status deployment/radio-learning --timeout=300s
+        kubectl --namespace radio-learning rollout status deployment/radio-learning-proxy --timeout=300s
+        kubectl --namespace radio-learning get pods -o wide
+        # The E2E container uses the network of the runner. The node port is on
+        # 127.0.0.1:8080 there.
+        {
+          echo "network=host"
+          echo "base-url=http://localhost:8080/"
+          echo "host-url=http://127.0.0.1:8080/"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Write the logs
+      if: inputs.command == 'logs'
+      shell: bash
+      env:
+        LOG_DIR: ${{ inputs.log-dir }}
+      run: |
+        set -uo pipefail
+        mkdir -p "$LOG_DIR"
+        ns=(--namespace radio-learning)
+        kubectl "${ns[@]}" get all,pvc,networkpolicy -o wide > "$LOG_DIR/kind-resources.txt" 2>&1
+        kubectl "${ns[@]}" get events --sort-by=.lastTimestamp > "$LOG_DIR/kind-events.txt" 2>&1
+        kubectl "${ns[@]}" describe pods > "$LOG_DIR/kind-pods.txt" 2>&1
+        kubectl --namespace kube-system get pods -o wide > "$LOG_DIR/kind-kube-system.txt" 2>&1
+        for name in radio-learning-proxy radio-learning postgres; do
+          kubectl "${ns[@]}" logs --selector "app.kubernetes.io/name=$name" \
+            --all-containers --prefix --timestamps --tail=-1 > "$LOG_DIR/kind-$name.log" 2>&1
+        done
+        ls -l "$LOG_DIR"
+
+    - name: Delete the cluster
+      if: inputs.command == 'down'
+      shell: bash
+      env:
+        CLUSTER: ${{ inputs.cluster-name }}
+      run: |
+        if command -v kind > /dev/null; then
+          kind delete cluster --name "$CLUSTER"
+        else
+          echo "kind is not installed. No cluster to delete."
+        fi

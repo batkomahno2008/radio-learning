@@ -1,0 +1,514 @@
+# CI pipeline (epic #1, issue #10).
+#
+#   build ──────┐
+#   manifests ──┼─> staging-e2e (compose, kind) ──> publish (push to main and v*.*.* tags only)
+#
+# - build: API tests (Dockerfile target "test"), the runtime and proxy images, the
+#   image checks of #8, and the e2e target for the build cache.
+# - manifests: kubeconform for the Kubernetes overlays, "docker compose config" for
+#   the Compose files.
+# - staging-e2e: a temporary staging on Docker Compose and on kind (decision D1).
+#   A deploy step deploys. Then the E2E image runs in its own container through
+#   NGINX (rule 2.1). @live does not block the pipeline (decision D10).
+# - publish: pushes the two images to GHCR with an SBOM and provenance. The E2E
+#   image is never published.
+#
+# Pin each action to a full commit SHA. The comment gives the version.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Cancel old runs on a PR. Runs on main and on tags always finish, so each one publishes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  APP_IMAGE: ghcr.io/batkomahno2008/radio-learning
+  PROXY_IMAGE: ghcr.io/batkomahno2008/radio-learning-proxy
+  # kubeconform: change the version and the SHA-256 sum together.
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  KUBECTL_VERSION: v1.37.0
+  KUBECTL_SHA256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+  # The Gateway API schemas for kubeconform: datreeio/CRDs-catalog, pinned to a commit.
+  CRDS_CATALOG_COMMIT: 63669a570e231d4f1f8396d229a1de512bcf0a34
+
+jobs:
+  build:
+    name: Build and API tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Image label values
+        id: labels
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The commit time, not the build time, so a build of the same commit gets the same label.
+          created="$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)"
+          {
+            echo "created=$created"
+            echo "version=sha-${GITHUB_SHA::7}"
+          } >> "$GITHUB_OUTPUT"
+
+      # The API tests (pg-mem, no network). A failed test stops the pipeline here.
+      - name: API tests (target test)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: test
+          outputs: type=cacheonly
+          cache-from: type=gha,scope=runtime
+
+      - name: Build the runtime image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: runtime
+          load: true
+          tags: radio-learning:ci
+          build-args: |
+            IMAGE_SOURCE=${{ github.server_url }}/${{ github.repository }}
+            IMAGE_REVISION=${{ github.sha }}
+            IMAGE_VERSION=${{ steps.labels.outputs.version }}
+            IMAGE_CREATED=${{ steps.labels.outputs.created }}
+          cache-from: type=gha,scope=runtime
+          cache-to: type=gha,scope=runtime,mode=max
+
+      - name: Build the proxy image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: proxy
+          load: true
+          tags: radio-learning-proxy:ci
+          build-args: |
+            IMAGE_SOURCE=${{ github.server_url }}/${{ github.repository }}
+            IMAGE_REVISION=${{ github.sha }}
+            IMAGE_VERSION=${{ steps.labels.outputs.version }}
+            IMAGE_CREATED=${{ steps.labels.outputs.created }}
+          cache-from: type=gha,scope=proxy
+          cache-to: type=gha,scope=proxy,mode=max
+
+      # The staging jobs build the e2e image again from this cache.
+      - name: Build the e2e target (cache only)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: e2e
+          outputs: type=cacheonly
+          cache-from: type=gha,scope=e2e
+          cache-to: type=gha,scope=e2e,mode=max
+
+      # The checks of #8 (PR #24): the published images have no tests (rule 2.2).
+      - name: Check the runtime image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh radio-learning:ci -c '
+            set -e
+            for path in tests public cucumber.js node_modules/@cucumber node_modules/playwright \
+                node_modules/@playwright node_modules/pg-mem node_modules/supertest node_modules/hls.js; do
+              if [ -e "$path" ]; then echo "Unexpected file: /app/$path"; exit 1; fi
+            done
+            for tool in npm npx yarn corepack; do
+              if command -v "$tool"; then echo "Unexpected tool: $tool"; exit 1; fi
+            done
+            found="$(find / -xdev \( -name "*.feature" -o -name "*.steps.js" -o -path "*/tests/api/*" \) 2>/dev/null | head -5)"
+            if [ -n "$found" ]; then echo "Unexpected test files: $found"; exit 1; fi
+            echo "user: $(id)"; ls -A /app
+          '
+          docker image inspect radio-learning:ci \
+            --format 'user={{.Config.User}} entrypoint={{json .Config.Entrypoint}} labels={{json .Config.Labels}}'
+          test "$(docker image inspect radio-learning:ci --format '{{.Config.User}}')" = "1000:1000"
+
+      - name: Check the proxy image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh radio-learning-proxy:ci -c '
+            set -e
+            if [ -e /app ]; then echo "Unexpected directory: /app"; exit 1; fi
+            if command -v node; then echo "Unexpected tool: node"; exit 1; fi
+            test -f /usr/share/nginx/vendor/hls/hls.min.js
+            found="$(find / -xdev \( -name "server.js" -o -name "*.feature" -o -name "*.steps.js" -o -name "*.test.js" -o -name "*.map" \) 2>/dev/null | head -5)"
+            if [ -n "$found" ]; then echo "Unexpected files: $found"; exit 1; fi
+            echo "user: $(id)"
+          '
+          docker image inspect radio-learning-proxy:ci \
+            --format 'user={{.Config.User}} labels={{json .Config.Labels}}'
+          test "$(docker image inspect radio-learning-proxy:ci --format '{{.Config.User}}')" = "101"
+
+      - name: Save the images
+        shell: bash
+        run: docker save radio-learning:ci radio-learning-proxy:ci -o "$RUNNER_TEMP/images.tar"
+
+      - name: Upload the images
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-images
+          path: ${{ runner.temp }}/images.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  manifests:
+    name: Check the Kubernetes and Compose files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install kubectl and kubeconform
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          curl -fsSL --retry 3 -o "$bin/kubectl" \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/kubeconform.tar.gz" \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECTL_SHA256}  $bin/kubectl" | sha256sum -c -
+          echo "${KUBECONFORM_SHA256}  $RUNNER_TEMP/kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" -C "$bin" kubeconform
+          chmod 0755 "$bin/kubectl"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: kubeconform (staging and prod overlays)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The staging overlay needs db.env. The file has random values and Git ignores it.
+          deploy/k8s/kind/db-env.sh
+          catalog="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRDS_CATALOG_COMMIT}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
+          for overlay in staging prod; do
+            echo "== $overlay"
+            kubectl kustomize "deploy/k8s/overlays/$overlay" | kubeconform -strict -summary \
+              -kubernetes-version 1.37.0 \
+              -schema-location default \
+              -schema-location "$catalog"
+          done
+
+      - name: docker compose config (production, staging, TLS)
+        shell: bash
+        env:
+          # Placeholders: "config" checks the files only. It starts nothing.
+          POSTGRES_PASSWORD: placeholder
+          APP_IMAGE: radio-learning:ci
+          PROXY_IMAGE: radio-learning-proxy:ci
+          CERTS_DIR: /nonexistent
+        run: |
+          set -euo pipefail
+          docker compose version
+          docker compose -f compose.yaml config -q
+          docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml config -q
+          docker compose -f compose.yaml -f deploy/compose/compose.tls.yaml config -q
+          echo "All Compose files are valid."
+
+  staging-e2e:
+    name: Staging E2E (${{ matrix.target }})
+    needs: [build, manifests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [compose, kind]
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-images
+          path: ${{ runner.temp }}/images
+
+      - name: Load the images
+        shell: bash
+        run: |
+          docker load -i "$RUNNER_TEMP/images/images.tar"
+          rm -f "$RUNNER_TEMP/images/images.tar"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the E2E image from the cache
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: e2e
+          load: true
+          tags: radio-learning-e2e:ci
+          cache-from: type=gha,scope=e2e
+
+      # Deploy. These steps run no test.
+      - name: Deploy (Docker Compose)
+        id: deploy_compose
+        if: matrix.target == 'compose'
+        uses: ./.github/actions/staging-compose
+        with:
+          command: up
+          staging-id: gh${{ github.run_id }}-${{ github.run_attempt }}
+          # Not 8080: that host port is for kind (deploy/k8s/kind/cluster.yaml).
+          http-port: "18080"
+
+      - name: Deploy (kind)
+        id: deploy_kind
+        if: matrix.target == 'kind'
+        uses: ./.github/actions/staging-kind
+        with:
+          command: up
+
+      - name: Wait for NGINX and the app
+        id: ready
+        shell: bash
+        env:
+          HOST_URL: ${{ steps.deploy_compose.outputs.host-url || steps.deploy_kind.outputs.host-url }}
+        run: |
+          set -euo pipefail
+          for path in healthz api/ready; do
+            code=000
+            for _ in $(seq 1 60); do
+              code="$(curl -s -o /dev/null -w '%{http_code}' "${HOST_URL}${path}" || true)"
+              if [ "$code" = "200" ]; then break; fi
+              sleep 2
+            done
+            echo "GET ${HOST_URL}${path} -> $code"
+            if [ "$code" != "200" ]; then exit 1; fi
+          done
+
+      # Test. These steps do not deploy.
+      - name: E2E tests
+        id: e2e
+        uses: ./.github/actions/run-e2e
+        with:
+          base-url: ${{ steps.deploy_compose.outputs.base-url || steps.deploy_kind.outputs.base-url }}
+          network: ${{ steps.deploy_compose.outputs.network || steps.deploy_kind.outputs.network }}
+          report-dir: reports/e2e
+
+      # @live plays the real station. It does not block the pipeline (decision D10).
+      - name: E2E tests (@live, does not block)
+        id: e2e_live
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        continue-on-error: true
+        uses: ./.github/actions/run-e2e
+        with:
+          base-url: ${{ steps.deploy_compose.outputs.base-url || steps.deploy_kind.outputs.base-url }}
+          network: ${{ steps.deploy_compose.outputs.network || steps.deploy_kind.outputs.network }}
+          profile: live
+          report-dir: reports/live
+
+      # Rule R8 on Kubernetes: only NGINX is reachable from outside.
+      - name: NetworkPolicy test (kind)
+        if: ${{ !cancelled() && matrix.target == 'kind' && steps.ready.outcome == 'success' }}
+        shell: bash
+        run: deploy/k8s/kind/netpol-test.sh
+
+      - name: Collect the logs (Docker Compose)
+        if: ${{ (failure() || steps.e2e_live.outcome == 'failure') && matrix.target == 'compose' }}
+        uses: ./.github/actions/staging-compose
+        with:
+          command: logs
+          staging-id: gh${{ github.run_id }}-${{ github.run_attempt }}
+          http-port: "18080"
+          log-dir: staging-logs
+
+      - name: Collect the logs (kind)
+        if: ${{ (failure() || steps.e2e_live.outcome == 'failure') && matrix.target == 'kind' }}
+        uses: ./.github/actions/staging-kind
+        with:
+          command: logs
+          log-dir: staging-logs
+
+      - name: Upload the reports and the logs
+        if: ${{ failure() || steps.e2e_live.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: staging-e2e-${{ matrix.target }}-report
+          path: |
+            reports/
+            staging-logs/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Remove the environment (Docker Compose)
+        if: ${{ always() && matrix.target == 'compose' }}
+        uses: ./.github/actions/staging-compose
+        with:
+          command: down
+          staging-id: gh${{ github.run_id }}-${{ github.run_attempt }}
+          http-port: "18080"
+
+      - name: Remove the environment (kind)
+        if: ${{ always() && matrix.target == 'kind' }}
+        uses: ./.github/actions/staging-kind
+        with:
+          command: down
+
+  publish:
+    name: Publish to GHCR
+    # #11 adds the security job to this list.
+    needs: [build, manifests, staging-e2e]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      # id-token and attestations: GitHub artifact attestations (gh attestation verify).
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image label values
+        id: labels
+        shell: bash
+        run: |
+          set -euo pipefail
+          created="$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)"
+          echo "created=$created" >> "$GITHUB_OUTPUT"
+
+      # The same tags for both images: sha-<short>, main, X.Y.Z, X.Y, and latest
+      # only on a release tag (vX.Y.Z with no pre-release part).
+      - name: Tags (app)
+        id: meta_app
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.APP_IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
+
+      # Keep these tags the same as the tags of the app image.
+      - name: Tags (proxy)
+        id: meta_proxy
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.PROXY_IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
+
+      # The build uses the cache of the build job, so the layers are the tested layers.
+      - name: Push the app image
+        id: push_app
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: runtime
+          push: true
+          tags: ${{ steps.meta_app.outputs.tags }}
+          build-args: |
+            IMAGE_SOURCE=${{ github.server_url }}/${{ github.repository }}
+            IMAGE_REVISION=${{ github.sha }}
+            IMAGE_VERSION=${{ steps.meta_app.outputs.version }}
+            IMAGE_CREATED=${{ steps.labels.outputs.created }}
+          cache-from: type=gha,scope=runtime
+          provenance: mode=max
+          sbom: true
+
+      - name: Push the proxy image
+        id: push_proxy
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: proxy
+          push: true
+          tags: ${{ steps.meta_proxy.outputs.tags }}
+          build-args: |
+            IMAGE_SOURCE=${{ github.server_url }}/${{ github.repository }}
+            IMAGE_REVISION=${{ github.sha }}
+            IMAGE_VERSION=${{ steps.meta_proxy.outputs.version }}
+            IMAGE_CREATED=${{ steps.labels.outputs.created }}
+          cache-from: type=gha,scope=proxy
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest the app image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.APP_IMAGE }}
+          subject-digest: ${{ steps.push_app.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest the proxy image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.PROXY_IMAGE }}
+          subject-digest: ${{ steps.push_proxy.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        shell: bash
+        env:
+          APP_TAGS: ${{ steps.meta_app.outputs.tags }}
+          PROXY_TAGS: ${{ steps.meta_proxy.outputs.tags }}
+          APP_DIGEST: ${{ steps.push_app.outputs.digest }}
+          PROXY_DIGEST: ${{ steps.push_proxy.outputs.digest }}
+        run: |
+          {
+            echo "### Published images"
+            echo
+            echo "App: \`${APP_IMAGE}@${APP_DIGEST}\`"
+            echo
+            echo '```'
+            echo "$APP_TAGS"
+            echo '```'
+            echo
+            echo "Proxy: \`${PROXY_IMAGE}@${PROXY_DIGEST}\`"
+            echo
+            echo '```'
+            echo "$PROXY_TAGS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
