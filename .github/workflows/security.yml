@@ -70,7 +70,8 @@ jobs:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The secret scan reads the whole Git history.
+          # The secret scan reads the whole Git history. This fetches all branches,
+          # and gitleaks reads all of them (policy S7).
           fetch-depth: 0
           persist-credentials: false
 
@@ -120,6 +121,7 @@ jobs:
           hide-progress: true
 
       - name: S1 upload SARIF
+        id: s1_upload
         if: ${{ !cancelled() }}
         continue-on-error: ${{ env.MODE != 'enforce' }}
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
@@ -162,6 +164,7 @@ jobs:
           hide-progress: true
 
       - name: S3 upload SARIF
+        id: s3_upload
         if: ${{ !cancelled() }}
         continue-on-error: ${{ env.MODE != 'enforce' }}
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
@@ -206,6 +209,7 @@ jobs:
           hide-progress: true
 
       - name: S5 upload SARIF
+        id: s5_upload
         if: ${{ !cancelled() }}
         continue-on-error: ${{ env.MODE != 'enforce' }}
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
@@ -231,6 +235,7 @@ jobs:
             --no-progress --disable-secrets --fail-on high,critical
 
       - name: S4 upload SARIF
+        id: s4_upload
         if: ${{ !cancelled() }}
         continue-on-error: ${{ env.MODE != 'enforce' }}
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
@@ -256,6 +261,7 @@ jobs:
             --redact --no-banner --exit-code 1
 
       - name: S7 upload SARIF
+        id: s7_upload
         if: ${{ !cancelled() }}
         continue-on-error: ${{ env.MODE != 'enforce' }}
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
@@ -322,21 +328,27 @@ jobs:
           title: Repository scans
           sarif-dir: ${{ runner.temp }}/sarif
           mode: ${{ env.MODE }}
-          # CodeQL has no exit code for findings. In enforce mode, a CRITICAL or HIGH
-          # CodeQL result fails the job (policy S8).
-          fail-on-high: codeql/*.sarif
+          # CodeQL has no exit code for findings, and a dismissal in the Security tab
+          # is not in the local SARIF file. So this job has no CodeQL gate. A code
+          # scanning ruleset gives it (policy 3.2, S8).
+          # A row for an upload shows FAIL when the upload of the SARIF file failed.
           gates: |
             S1 npm, SARIF run=${{ steps.s1_sarif.outcome }}
             S1 npm, gate=${{ steps.s1_gate.outcome }}
+            S1 npm, upload SARIF=${{ steps.s1_upload.outcome }}
             S3 Dockerfile, SARIF run=${{ steps.s3_sarif.outcome }}
             S3 Dockerfile, gate=${{ steps.s3_gate.outcome }}
+            S3 Dockerfile, upload SARIF=${{ steps.s3_upload.outcome }}
             S5 Kubernetes, SARIF run=${{ steps.s5_sarif.outcome }}
             S5 Kubernetes, gate=${{ steps.s5_gate.outcome }}
+            S5 Kubernetes, upload SARIF=${{ steps.s5_upload.outcome }}
             S4 Compose (KICS)=${{ steps.s4_kics.outcome }}
+            S4 Compose, upload SARIF=${{ steps.s4_upload.outcome }}
             S7 Git history (gitleaks)=${{ steps.s7_gitleaks.outcome }}
-            S9 workflows, SARIF run=${{ steps.s9_sarif.outcome }}
+            S7 Git history, upload SARIF=${{ steps.s7_upload.outcome }}
+            S9 workflows, SARIF run and upload=${{ steps.s9_sarif.outcome }}
             S9 workflows, gate=${{ steps.s9_gate.outcome }}
-            S8 S9 CodeQL, analyze=${{ steps.codeql.outcome }}
+            S8 S9 CodeQL, analyze and upload=${{ steps.codeql.outcome }}
 
       - name: Upload the SARIF files
         if: ${{ !cancelled() }}
@@ -465,6 +477,7 @@ jobs:
           hide-progress: true
 
       - name: S2 S7 upload SARIF
+        id: s2_upload
         if: ${{ !cancelled() }}
         continue-on-error: ${{ env.MODE != 'enforce' }}
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
@@ -502,6 +515,7 @@ jobs:
             "$GIXY_IMAGE" gixy -f sarif -o /out/S6-gixy-nginx.sarif nginx-rendered.conf
 
       - name: S6 upload SARIF
+        id: s6_upload
         if: ${{ !cancelled() && matrix.name == 'proxy' }}
         continue-on-error: ${{ env.MODE != 'enforce' }}
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
@@ -520,7 +534,9 @@ jobs:
             S2 S7 image, SARIF run=${{ steps.s2_sarif.outcome }}
             S2 image packages, gate=${{ steps.s2_gate.outcome }}
             S7 image secrets, gate=${{ steps.s7_gate.outcome }}
+            S2 S7 image, upload SARIF=${{ steps.s2_upload.outcome }}
             S6 NGINX config (Gixy-Next)=${{ steps.s6_gixy.outcome }}
+            S6 NGINX config, upload SARIF=${{ steps.s6_upload.outcome }}
 
       - name: Upload the SARIF files
         if: ${{ !cancelled() }}
@@ -579,6 +595,7 @@ jobs:
           hide-progress: true
 
       - name: S2 e2e image upload SARIF
+        id: s2_upload
         if: ${{ !cancelled() }}
         continue-on-error: ${{ env.MODE != 'enforce' }}
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
@@ -595,6 +612,7 @@ jobs:
           mode: ${{ env.MODE }}
           gates: |
             S2 e2e image, SARIF run=${{ steps.s2_sarif.outcome }}
+            S2 e2e image, upload SARIF=${{ steps.s2_upload.outcome }}
 
       - name: Upload the SARIF files
         if: ${{ !cancelled() }}

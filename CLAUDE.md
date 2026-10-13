@@ -375,11 +375,15 @@ the tools with their pinned versions, the gates and the places for exceptions.
   The night run scans the published images with tag `main` and always uses `report` mode.
 - Input `mode`: `report` (now) or `enforce`. In `report` mode the job passes. In both modes
   it writes a summary table (`$GITHUB_STEP_SUMMARY`) with the result counts of each tool for
-  each severity, and the gate result of each scan. `enforce` fails on a gate violation.
-  Issue #13 changes the value in `ci.yml`.
+  each severity, and the result of each scan, gate and SARIF upload step. `enforce` fails
+  on a failed gate step. Issue #13 changes the value in `ci.yml`.
+- The CodeQL gate is not in the workflow. It is a code scanning ruleset ("Require code
+  scanning results", High or higher) that an admin sets (policy section 3.2, S8).
 - Jobs: `repo` (S1, S3, S4, S5, S7 history, S8, S9), `images` (matrix `runtime` and
-  `proxy`: S2, S7 images, S6) and `e2e-image` (S2, report only). They load the images from
-  the artifact `ci-images`.
+  `proxy`: S2, S7 images, S6) and `e2e-image` (S2, report only). `images` loads the images
+  from the artifact `ci-images`. `e2e-image` builds the `e2e` image from the build cache.
+- The gitleaks scan reads all branches. A branch with a secret, also a fake one, makes the
+  S7 gate fail until you delete the branch.
 - Tools: Trivy (npm, images, Dockerfile, Kubernetes), KICS (Compose), Gixy-Next (NGINX
   config from `nginx -T` of the `proxy` image), gitleaks (history), CodeQL (JavaScript and
   workflows), zizmor (workflows). KICS, Gixy-Next and gitleaks run from their official

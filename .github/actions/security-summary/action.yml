@@ -2,8 +2,9 @@
 #
 # This action is not a scanner. It reads the SARIF files that the scan tools wrote,
 # counts the results for each severity, and prints one table. It also prints the
-# gate result of each scan step. In "enforce" mode it fails the job when a CodeQL
-# result is CRITICAL or HIGH, because CodeQL has no exit code for findings.
+# result of each scan step, upload step and gate step. It never fails the job for a
+# finding. The gate steps of the tools do that. The CodeQL gate is a code scanning
+# ruleset (docs/security/policy.md), because a dismissal is not in the local SARIF file.
 #
 # Severity of a result: the "security-severity" score of its rule when the tool gives
 # one (9.0 or more CRITICAL, 7.0 or more HIGH, 4.0 or more MEDIUM, else LOW). Without
@@ -27,12 +28,6 @@ inputs:
   mode:
     description: "report or enforce."
     required: true
-  fail-on-high:
-    description: >
-      Glob, relative to sarif-dir, of the SARIF files in which a CRITICAL or HIGH result
-      fails the job in enforce mode. Empty: no such rule.
-    required: false
-    default: ""
 
 runs:
   using: composite
@@ -44,7 +39,6 @@ runs:
         SARIF_DIR: ${{ inputs.sarif-dir }}
         GATES: ${{ inputs.gates }}
         MODE: ${{ inputs.mode }}
-        FAIL_ON_HIGH: ${{ inputs.fail-on-high }}
       run: |
         set -euo pipefail
         shopt -s globstar nullglob
@@ -97,7 +91,7 @@ runs:
           fi
           echo
           if [ -n "$GATES" ]; then
-            echo "| Gate | Result |"
+            echo "| Step (scan, gate or upload) | Result |"
             echo "|---|---|"
             while IFS='=' read -r label outcome; do
               [ -n "$label" ] || continue
@@ -110,24 +104,10 @@ runs:
             done <<< "$GATES"
             echo
             if [ "$MODE" = report ]; then
-              echo "The mode is \`report\`: a failed gate does not stop the job. It would stop it in \`enforce\` mode."
+              echo "The mode is \`report\`: a failed step does not stop the job. It would stop it in \`enforce\` mode."
             fi
           fi
         } > "$out"
 
         cat "$out"
         cat "$out" >> "$GITHUB_STEP_SUMMARY"
-
-        if [ -n "$FAIL_ON_HIGH" ]; then
-          total=0
-          for file in "$SARIF_DIR"/$FAIL_ON_HIGH; do
-            while IFS=$'\t' read -r _ crit high _ _; do
-              total=$((total + crit + high))
-            done < <(jq -r "$counts" "$file")
-          done
-          echo "CRITICAL and HIGH results in '${FAIL_ON_HIGH}': ${total}"
-          if [ "$MODE" = enforce ] && [ "$total" -gt 0 ]; then
-            echo "::error::The gate fails: ${total} CRITICAL or HIGH result(s) in '${FAIL_ON_HIGH}'."
-            exit 1
-          fi
-        fi

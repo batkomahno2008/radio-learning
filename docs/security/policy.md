@@ -30,7 +30,7 @@ The workflow `.github/workflows/security.yml` runs all scans. Section 2.1 gives 
 | S4 | Compose files | `compose.yaml` and all files in `deploy/compose/`. | KICS |
 | S5 | Kubernetes files | All files in `deploy/k8s/`. | Trivy (`config` scan) |
 | S6 | NGINX config | The config that the `proxy` image renders at start (`nginx -T`). | Gixy-Next |
-| S7 | Secrets | All commits in the Git history, and the files of the `runtime` and `proxy` images. | gitleaks (history), Trivy (images) |
+| S7 | Secrets | All commits of all branches in the Git history, and the files of the `runtime` and `proxy` images. | gitleaks (history), Trivy (images) |
 | S8 | Source code (SAST) | All JavaScript in the repository, server code and client code. | CodeQL |
 | S9 | GitHub Actions workflows | `.github/workflows/` and `.github/actions/`. | zizmor, CodeQL |
 | S10 | HTTP headers of a running stack | No scan. See 2.2. | – |
@@ -78,7 +78,8 @@ A reviewer checks them in each pull request that changes the related files.
 
 ### 3.2 Pass or fail rule for each target
 
-Each gate is a setting of the tool itself. The workflow has no gate logic of its own, except for CodeQL (see S8).
+Each gate is a setting of the tool itself. The workflow has no gate logic of its own.
+CodeQL has no gate setting. So its gate is a code scanning ruleset (see S8).
 
 | ID | The scan fails when | The scan passes when |
 |---|---|---|
@@ -88,11 +89,15 @@ Each gate is a setting of the tool itself. The workflow has no gate logic of its
 | S4 | KICS finds one or more CRITICAL or HIGH results (`--fail-on high,critical`). | The count of such results is 0. |
 | S5 | Trivy finds one or more CRITICAL or HIGH misconfigurations. | The count of such findings is 0. |
 | S6 | Gixy-Next finds one or more problems, of any level. Gixy-Next gives the level LOW to its weakest checks, for example version disclosure (9.6). | The count of problems is 0. |
-| S7 | gitleaks finds one or more secrets in the history, or Trivy finds one or more secrets in an image. All severities count. | The count of secrets is 0. |
-| S8 | CodeQL gives one or more results with a `security-severity` of 7.0 or more. The summary step of the workflow counts them. | The count of such results is 0. |
-| S9 | zizmor finds one or more problems of level MEDIUM or higher, or CodeQL gives one or more results with a `security-severity` of 7.0 or more. MEDIUM covers the checks of 8.1. | The count of such findings is 0. |
+| S7 | gitleaks finds one or more secrets in the history of any branch, or Trivy finds one or more secrets in an image. All severities count. See 3.3 for the branches. | The count of secrets is 0. |
+| S8 | CodeQL has one or more open alerts of level High or higher (`security-severity` of 7.0 or more). A code scanning ruleset blocks the merge (see below). | No open alert of that level. A dismissal in the Security tab closes an alert. |
+| S9 | zizmor finds one or more problems of level MEDIUM or higher, or CodeQL (`actions`) has one or more open alerts of level High or higher (ruleset, see S8). MEDIUM covers the checks of 8.1. | The count of such findings is 0. |
 | S10 | – (no scan) | – |
 | S11 | – (no scan). The pins of S9 follow the S9 rule. | – |
+
+The CodeQL gate for S8 and S9 needs a code scanning ruleset with the rule "Require code scanning results" for the tool CodeQL.
+Set the security alert threshold to "High or higher". The workflow does not read the local SARIF file for this gate, because the file does not show a dismissal.
+An admin of the repository sets the ruleset. This is a user action (see section 4).
 
 For S3 to S9, "fix available" does not apply. A change to the file or the code is always possible.
 
@@ -109,6 +114,9 @@ If S7 finds a real secret, do these steps in the same day:
 
 A public issue or a public comment must not hold a secret value or the details of an exploit.
 
+The S7 history scan covers all branches, not only the branch of the run. The repository is public, so a secret on any branch is public.
+A test branch with a real or a fake secret makes the S7 gate fail until you delete the branch.
+
 ## 4. Rollout mode
 
 The gate has two modes.
@@ -121,6 +129,7 @@ The gate has two modes.
 - The gate starts in `report` mode.
 - Issue #13 changes the gate to `enforce` mode after the remediation.
 - A required status check on `main` needs admin access to the repository. Issue #13 must ask the user to set it.
+- The CodeQL gate needs a code scanning ruleset (see S8 in 3.2). Only an admin sets it. Issue #13 must ask the user to set it, with the rule "Require code scanning results" and the threshold "High or higher".
 - The input `mode` of `.github/workflows/security.yml` sets the mode. The `security` job in `ci.yml` gives the value. Change that one line to switch all scans.
 - The night scan always runs in `report` mode.
 - The `publish` job waits for the `security` job.
@@ -132,7 +141,7 @@ An exception lets a known finding stay open. Most exceptions have a limited time
 
 ### 5.1 Rules
 
-- Accept a risk only in the own ignore file of the tool, or by a dismissal in the Security tab. Section 5.3 lists the places.
+- Accept a risk only in the ignore file of the tool, or by a dismissal in the Security tab. Section 5.3 lists the places.
 - Do not write an exception tool, an exception file format or a check of the exceptions.
 - Each exception must have all fields of the table in 5.2. The ignore files of the tools have no such fields. So write the fields in comment lines above the entry.
 - An exception applies to one finding ID in one target. Do not use wildcards.
@@ -158,12 +167,12 @@ An exception lets a known finding stay open. Most exceptions have a limited time
 
 | Tool | Place | Note |
 |---|---|---|
-| Trivy | `.trivyignore` in the repository root | One finding ID on each line. Add `exp:YYYY-MM-DD` to the line. Trivy reads the file by itself and stops to honor an entry after its date. |
+| Trivy | `.trivyignore` in the repository root | One finding ID on each line. Add `exp:YYYY-MM-DD` to the line. Trivy reads the file by itself. After the date, Trivy does not ignore the finding. |
 | gitleaks | `.gitleaksignore` in the repository root | One fingerprint on each line. A line that starts with `#` is a comment. The workflow gives the file to gitleaks. |
 | KICS | A comment in the scanned file: `# kics-scan ignore-line` or `# kics-scan ignore-block` | Write the fields in the comment lines above. |
 | Gixy-Next | The `--skips` flag in the Gixy-Next step of `security.yml` | Name the check. Write the fields in the comment lines above the step. |
 | zizmor | `.github/zizmor.yml`, key `rules.<rule>.ignore` | zizmor reads the file by itself. Write the fields in YAML comments. |
-| CodeQL | A dismissal of the alert in the Security tab | Write the fields in the comment of the dismissal. |
+| CodeQL | A dismissal of the alert in the Security tab | Write the fields in the comment of the dismissal. The CodeQL gate (S8) sees the dismissal. |
 
 Example of a Trivy entry:
 
