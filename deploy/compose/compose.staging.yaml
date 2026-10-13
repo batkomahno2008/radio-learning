@@ -1,0 +1,46 @@
+# Staging override: a temporary stack for the E2E tests (epic #1, decision D1). Issue #8.
+#
+#   STAGING_ID=pr-12 APP_IMAGE=... PROXY_IMAGE=... POSTGRES_PASSWORD=... \
+#     docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml up -d --wait
+#   docker run --rm --network container:radio-learning-staging-pr-12-proxy-1 \
+#     --shm-size=1g -e BASE_URL=http://localhost:8080/ <e2e image>
+#   docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml down -v
+#
+# - It builds nothing: APP_IMAGE and PROXY_IMAGE name images that exist.
+# - It has no named volume. The database lives in memory and `down -v` removes it.
+# - It has no TLS. BASE_URL must be a loopback origin (localhost or 127.0.0.1)
+#   that reaches NGINX. Plain HTTP with another host name, for example
+#   http://proxy:8080/, is not a secure context: Chromium logs a console error
+#   for the COOP header and the clean-console rule fails each scenario.
+#   The runner shares the network of the proxy container, so NGINX is localhost.
+#   Another way: --network host with BASE_URL=http://localhost:${HTTP_PORT}/.
+# - Run the suite with the `--profile live` argument for the @live scenarios.
+# - The project name has STAGING_ID, so two stacks can run at the same time.
+# - Compose resolves the relative paths from the directory of compose.yaml.
+
+name: radio-learning-staging-${STAGING_ID:-local}
+
+services:
+  proxy:
+    image: ${PROXY_IMAGE:?Set PROXY_IMAGE to the proxy image}
+    build: !reset null
+    environment:
+      # The fake station for the deterministic scenarios and the real station
+      # for the @live scenarios (decision of the user on epic #1).
+      STATION_ORIGINS: https://station.test https://d3d4yli4hf5bmh.cloudfront.net
+    volumes: !reset []
+
+  app:
+    image: ${APP_IMAGE:?Set APP_IMAGE to the runtime image}
+    build: !reset null
+    volumes:
+      # The runtime image has no tests/, so the stream list comes from the checkout.
+      # It lists https://station.test/hls/live.m3u8 first, as the E2E suite needs.
+      - ./tests/fixtures/streams.txt:/etc/radio-learning/streams.txt:ro
+
+  db:
+    volumes: !reset []
+    tmpfs:
+      - /var/lib/postgresql:rw,noexec,nosuid,uid=70,gid=70,mode=0700,size=256m
+
+volumes: !reset {}

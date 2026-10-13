@@ -49,8 +49,12 @@ npm run test:e2e:live     # only @live scenarios, against the real station feed
 npx cucumber-js tests/features/ratings.feature:20        # one scenario, by line
 npx cucumber-js --name "Giving a thumbs up"              # one scenario, by name
 HEADED=1 SLOWMO=250 npm run test:e2e                     # watch it in a browser
-BASE_URL=http://staging:8080/ npm run test:e2e           # test a deployed app
+BASE_URL=http://localhost:8080/ npm run test:e2e         # test a deployed app (NGINX)
 ```
+
+With plain HTTP, `BASE_URL` must be a loopback origin (`localhost` or `127.0.0.1`) or an
+HTTPS origin. Another host name is not a secure context. Chromium then logs a console error for the
+`Cross-Origin-Opener-Policy` header of NGINX, and the clean-console rule fails each scenario.
 
 The e2e suite needs Playwright's Chromium once per machine:
 `sudo npx playwright install --with-deps chromium`. The suite starts Chromium with no
@@ -63,6 +67,21 @@ E2E runner variables:
   `@live` scenarios play.
 
 A failed run writes `reports/cucumber.html` with a full-page screenshot per listener.
+
+The `Dockerfile` builds the images, and `compose.yaml` runs them (see "Docker images and
+Compose" below). Docker needs BuildKit, which is the default.
+
+```bash
+docker build .                                    # runs the API tests, makes the runtime image
+docker build --target test .                      # only the API tests
+docker build --target proxy -t radio-learning-proxy:local .   # NGINX image
+docker build --target e2e -t radio-learning-e2e:local .       # E2E runner image
+
+cp .env.example .env                              # then set POSTGRES_PASSWORD
+docker compose up -d --build --wait               # production stack: proxy, app, db (builds the images)
+docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml up -d --wait   # staging
+docker compose down -v                            # stop a stack and delete its data
+```
 
 ## Architecture
 
@@ -135,6 +154,90 @@ has the file layout, the mounts, the variables and the test commands.
   serves `/.well-known/acme-challenge/` from `/var/www/acme` for certbot.
 - Test: start the app, start the stock image with the files mounted (see the README), then
   `BASE_URL=http://localhost:8080/ npm run test:e2e`.
+
+### Docker images and Compose (`Dockerfile`, `compose.yaml`, `deploy/compose/`)
+
+One `Dockerfile` has these targets (epic #1, decision D7). `runtime` is the last stage, so it
+is the default target. Each base image has a tag and a digest. Change both together.
+
+| Target | Image | Content |
+|---|---|---|
+| `test` | – | Runs `npm run test:api` and writes `/test-passed`. It needs no network and no database. |
+| `e2e` | `radio-learning-e2e` | The Playwright image, `tests/`, `cucumber.js` and dev dependencies. No app code. Runs as `pwuser`. Not published. |
+| `proxy` | `ghcr.io/batkomahno2008/radio-learning-proxy` | NGINX config from `deploy/nginx/`, `public/` and the hls.js files (no source maps). No app code. Runs as UID 101. |
+| `runtime` | `ghcr.io/batkomahno2008/radio-learning` | `server.js`, `app.js`, `db.js`, `config.js`, `schema.sql`, `stream_URL.txt` and the production dependencies. Runs as UID 1000. |
+
+- `runtime` and `proxy` copy `/test-passed` from `test`. So a failed API test fails their build.
+  BuildKit caches a passed test, so a build with unchanged inputs does not run it again.
+- `runtime` has no tests, no `public/`, no dev dependencies, no hls.js and no npm, npx, corepack
+  or yarn. It sets `NODE_ENV=production`, `HOST=0.0.0.0`, `SERVE_STATIC=false` and `TRUST_PROXY=1`.
+  The entry point is `node server.js` in exec form, so Node is PID 1 and gets SIGTERM.
+- Both images have a `HEALTHCHECK`: `GET /api/health` on port 3000 and `GET /healthz` on port 8080.
+- The label build arguments are `IMAGE_SOURCE`, `IMAGE_REVISION`, `IMAGE_VERSION` and `IMAGE_CREATED`.
+- `.dockerignore` keeps `.git`, `data/`, `reports/`, `docs/`, `node_modules`, `.env*` and the
+  Compose files out of the build context. It keeps `tests/` in the context, because `test` and
+  `e2e` copy it.
+- `runtime` copies its files by name, not with `COPY . .`. If you add a file that the app needs
+  at run time, add its name to that `COPY` line. A new app file may also need a new
+  `--test-coverage-include` entry in `test:api`.
+
+`compose.yaml` runs three services. Only `proxy` has `ports:` (policy rule R8). Do not add a
+port to `app` or `db`, and do not add `compose.override.yaml`, because Compose loads it by itself.
+
+| Service | Image | Notes |
+|---|---|---|
+| `proxy` | `${PROXY_IMAGE}` (default `ghcr.io/.../radio-learning-proxy:latest`) | Publishes `${HTTP_PORT:-80}` to 8080. Waits for a healthy `app`. |
+| `app` | `${APP_IMAGE}` (default `ghcr.io/.../radio-learning:latest`) | `stop_grace_period: 15s`. Mounts the stream list read-only. Waits for a healthy `db`. |
+| `db` | `postgres:18.6-alpine`, pinned by digest | Runs as UID 70. Named volume `db-data` at `/var/lib/postgresql`. `pg_isready` health check. |
+
+- Networks: `edge` (`proxy`, `app`) and `backend` (`app`, `db`, with no route to the outside).
+- All services have `read_only: true`, a `tmpfs` for `/tmp`, `cap_drop: [ALL]`,
+  `no-new-privileges:true`, CPU and memory limits, and a numeric `user`.
+- Secrets come from `.env` (Git ignores it). Compose puts `POSTGRES_PASSWORD` into the
+  `DATABASE_URL` of the app, so use URL-safe characters. Example: `openssl rand -hex 24`.
+- Compose variables (`.env.example` lists them): `POSTGRES_PASSWORD` (required), `POSTGRES_USER`,
+  `POSTGRES_DB`, `APP_IMAGE`, `PROXY_IMAGE`, `HTTP_PORT`, `HTTPS_PORT`, `STATION_ORIGINS`
+  (default: the real station) and `STREAMS_HOST_FILE` (default `./stream_URL.txt`).
+- Run `docker compose` from the repository root. Compose resolves each relative path in the
+  added files from the directory of `compose.yaml`.
+- `docker compose up --build` builds `app` and `proxy` from the `Dockerfile`. The published
+  images do not exist before the first release.
+- `docker compose stop app` takes less than 1 s, because the app handles SIGTERM.
+- The `acme` volume is the certbot webroot. NGINX mounts it read-only at `/var/www/acme`.
+
+**Staging** (`deploy/compose/compose.staging.yaml`) is a temporary stack for the E2E tests. It
+does not build: `APP_IMAGE` and `PROXY_IMAGE` are required. It has no named volume (the database
+lives in memory) and no TLS. The project name is `radio-learning-staging-${STAGING_ID}`, so two
+stacks can run at the same time. The app reads `tests/fixtures/streams.txt` from the checkout.
+`STATION_ORIGINS` lists `https://station.test` and the real station, so `@live` runs through NGINX.
+
+```bash
+export POSTGRES_PASSWORD=$(openssl rand -hex 24) STAGING_ID=local HTTP_PORT=8080 \
+  APP_IMAGE=radio-learning:local PROXY_IMAGE=radio-learning-proxy:local
+docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml up -d --wait
+docker run --rm --network host --shm-size=1g -e BASE_URL=http://localhost:8080/ radio-learning-e2e:local
+docker run --rm --network host --shm-size=1g -e BASE_URL=http://localhost:8080/ radio-learning-e2e:local --profile live
+docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml down -v
+```
+
+The E2E runner must reach NGINX on a loopback origin (`localhost` or `127.0.0.1`). A page on
+plain HTTP with another host name (for example `http://proxy:8080/`) is not a secure context.
+Chromium then logs a console error for the `Cross-Origin-Opener-Policy` header, and the
+clean-console rule fails each scenario. NGINX keeps the header, and the harness has no
+exception (decision on PR #24). Use `--network host` with the published port, or
+`--network container:<proxy container>` with `BASE_URL=http://localhost:8080/`.
+
+The Compose files need Docker Compose 2.24.0 or later (`!reset`) and Docker Engine 25 or later
+(`start_interval` in the health checks).
+
+**TLS** (`deploy/compose/compose.tls.yaml`, decision D14) adds port `${HTTPS_PORT:-443}`. It mounts
+`deploy/nginx/tls/tls.conf` and the directory in `CERTS_DIR` (`fullchain.pem` and `privkey.pem`)
+read-only. Keep the certificates outside the repository. UID 101 must read `privkey.pem`, for
+example with mode 0640 and group 101. NGINX then sends each HTTP request except `/healthz` to HTTPS.
+
+```bash
+CERTS_DIR=/etc/radio-learning/certs docker compose -f compose.yaml -f deploy/compose/compose.tls.yaml up -d --wait
+```
 
 ### How the page gets its data
 
@@ -238,11 +341,13 @@ in `pages/`, and the harness in `support/`.
   control what is on air. Requests to other origins than `BASE_URL` (web fonts) are
   stubbed.
 - **Secure context:** `crypto.randomUUID()` exists only in a secure context (HTTPS or
-  `localhost`). Staging uses plain HTTP on a host name that is not `localhost`, so
-  `public/app.js` then makes the client id (a UUID v4) from `crypto.getRandomValues()`.
-  Chromium starts with no flag that changes this, so the suite tests what a real
-  browser does. To test this path locally, start the app with `HOST=0.0.0.0` and use
-  a `BASE_URL` with an address that is not loopback.
+  `localhost`). On plain HTTP with a host name that is not loopback, `public/app.js` makes the
+  client id (a UUID v4) from `crypto.getRandomValues()`. Chromium starts with no flag that
+  changes this, so the suite tests what a real browser does. Staging E2E goes through NGINX
+  and reaches it on a loopback origin (decision on PR #24), so the page uses
+  `crypto.randomUUID()` there, as in production. To test the fallback, run the suite
+  directly against the app (no NGINX, so no COOP header): start it with `HOST=0.0.0.0`
+  and use a `BASE_URL` with an address that is not loopback.
 - **No waiting for polls:** each browser context has Playwright's clock installed;
   `PlayerPage.pollStation()` fast-forwards 10 seconds to trigger the next metadata poll.
 - **Listeners:** steps name an actor ("Alice", "Bob"). `World.player(name)` lazily opens

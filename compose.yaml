@@ -1,0 +1,141 @@
+# Production stack: NGINX (proxy), the Node app and Postgres (issue #8).
+#
+#   cp .env.example .env     # then set POSTGRES_PASSWORD (and see the other variables)
+#   docker compose up -d
+#
+# Only the proxy service publishes ports (policy rule R8). The app (3000) and
+# Postgres (5432) have no `ports:`, and no override file adds them.
+# Staging: add deploy/compose/compose.staging.yaml.
+# TLS:     add deploy/compose/compose.tls.yaml.
+# Compose resolves each relative path in the added files from the directory of
+# this file, so run `docker compose` from here.
+#
+# Write no secret in this file. Compose reads the values from `.env`, which Git ignores.
+
+name: radio-learning
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  proxy:
+    image: ${PROXY_IMAGE:-ghcr.io/batkomahno2008/radio-learning-proxy:latest}
+    build:
+      context: .
+      target: proxy
+    user: "101:101"
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+        # NGINX finds the address of the app one time, at start. So when the
+        # app restarts, NGINX restarts too.
+        restart: true
+    ports:
+      - "${HTTP_PORT:-80}:8080"
+    environment:
+      APP_UPSTREAM: app:3000
+      # Origins of the station host, for the CSP. Use the origin of the stream
+      # in the streams file.
+      STATION_ORIGINS: ${STATION_ORIGINS:-https://d3d4yli4hf5bmh.cloudfront.net}
+    volumes:
+      # The webroot of certbot (docs: deploy/nginx/README.md). Empty until
+      # certbot writes a challenge file.
+      - acme:/var/www/acme:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    networks: [edge]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+    logging: *logging
+
+  app:
+    image: ${APP_IMAGE:-ghcr.io/batkomahno2008/radio-learning:latest}
+    build:
+      context: .
+      target: runtime
+    user: "1000:1000"
+    restart: unless-stopped
+    # The app needs up to 10 s to finish open requests after SIGTERM.
+    stop_grace_period: 15s
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Built from the values in .env. Use only URL-safe characters in
+      # POSTGRES_PASSWORD (for example the output of `openssl rand -hex 24`).
+      DATABASE_URL: postgres://${POSTGRES_USER:-radio}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-radio}
+      STREAMS_FILE: /etc/radio-learning/streams.txt
+    volumes:
+      # The stream list. The app reads it again on each /api/streams request, so a
+      # change needs no restart. Set STREAMS_HOST_FILE to use another file.
+      - ${STREAMS_HOST_FILE:-./stream_URL.txt}:/etc/radio-learning/streams.txt:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    networks: [edge, backend]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 256M
+    logging: *logging
+
+  db:
+    # Postgres 18 keeps its data below /var/lib/postgresql (the version directory
+    # is inside). The numeric user 70 is the postgres user of the Alpine image.
+    # It runs as this user from the start, so the entrypoint needs no root rights.
+    image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    user: "70:70"
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-radio}
+      POSTGRES_DB: ${POSTGRES_DB:-radio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+      start_interval: 1s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /var/run/postgresql:rw,noexec,nosuid,uid=70,gid=70,mode=0775,size=1m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    networks: [backend]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+    logging: *logging
+
+networks:
+  # proxy <-> app. The proxy publishes the only ports.
+  edge:
+  # app <-> db. It has no route to the outside, so the database cannot call out.
+  backend:
+    internal: true
+
+volumes:
+  db-data:
+  acme:
