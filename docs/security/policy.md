@@ -53,6 +53,7 @@ The tag or version is for the reader.
 - The KICS Action builds a new image at each run from an unpinned base image. So the workflow runs the official KICS image.
 - The gitleaks Action needs a license for an organization, and it scans only the commits of a pull request. So the workflow runs the official gitleaks image.
 - Gixy-Next has no Action. The workflow runs its official image.
+- The Trivy Action installs the Trivy binary by version number. So the Trivy binary has a version pin, and the Action has a SHA pin.
 - Change a version and its pin together. The `env` block of `security.yml` holds the tool versions and the image digests.
 - CodeQL uses the default query suite for `javascript-typescript` and for `actions`.
 
