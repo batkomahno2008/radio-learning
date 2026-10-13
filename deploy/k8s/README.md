@@ -60,7 +60,7 @@ Service. The staging overlay changes it to a `NodePort`. The policies control in
 traffic only. Add egress policies if your rules need them.
 
 To test the policies on a running cluster, run `deploy/k8s/kind/netpol-test.sh`. It starts
-throwaway pods in another namespace and in the app namespace, and it exits with 1 when a
+temporary pods in another namespace and in the app namespace, and it exits with 1 when a
 result is not as expected.
 
 ## Staging on kind

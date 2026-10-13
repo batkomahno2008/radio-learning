@@ -1,5 +1,5 @@
 #!/bin/sh
-# Tests rule R8 of docs/security/policy.md with throwaway pods: only NGINX is reachable
+# Tests rule R8 of docs/security/policy.md with temporary pods: only NGINX is reachable
 # from outside, only NGINX reaches the app, and only the app and the backup job reach Postgres.
 #
 # Run it on the current kubectl context, after the staging overlay is ready.
@@ -17,11 +17,16 @@ IMAGE="postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d
 created_ns=0
 cleanup() {
   kubectl --namespace "$NS" delete pod netpol-probe --ignore-not-found --wait=false > /dev/null 2>&1 || true
+  kubectl --namespace "$OTHER_NS" delete pod netpol-probe --ignore-not-found --wait=false > /dev/null 2>&1 || true
   if [ "$created_ns" -eq 1 ]; then
     kubectl delete namespace "$OTHER_NS" --ignore-not-found --wait=false > /dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
+# The shell does not run the EXIT trap when a signal ends the script. Exit on a signal,
+# so the cleanup runs after Ctrl-C and after a stop by the CI.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # A namespace that an earlier run deleted can still be in the state Terminating.
 # Wait until it is gone (120 s at most), then make it again.

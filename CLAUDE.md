@@ -204,7 +204,10 @@ steps for staging, production, backup and restore.
 ```bash
 deploy/k8s/kind/db-env.sh                               # once, makes overlays/staging/db.env
 kubectl kustomize deploy/k8s/overlays/staging           # also: overlays/prod
-kubectl kustomize deploy/k8s/overlays/staging | kubeconform -strict -summary -kubernetes-version 1.37.0
+kubectl kustomize deploy/k8s/overlays/prod | kubeconform -strict -summary -kubernetes-version 1.37.0 \
+  -schema-location default \
+  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+                                                        # the second schema location is for the HTTPRoute
 
 kind create cluster --config deploy/k8s/kind/cluster.yaml   # host port 8080 -> NGINX
 deploy/k8s/kind/install-calico.sh
