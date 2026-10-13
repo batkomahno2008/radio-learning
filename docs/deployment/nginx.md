@@ -44,7 +44,7 @@ Where to set them:
 
 ### `APP_UPSTREAM`
 
-NGINX finds the address of the host name one time, at start. If the name does not resolve,
+NGINX finds the address of the host name at start, and not again. If the name does not resolve,
 NGINX does not start. If the app gets a new address, NGINX sends traffic to the old address
 until NGINX restarts. Compose restarts `proxy` when `app` restarts. A Kubernetes Service
 address does not change.
@@ -59,7 +59,7 @@ stream. The CSP allows only the origins in this variable (`img-src`, `media-src`
   for example `https://stream.example.com`.
 - Keep this variable and the streams file in line. If an origin is missing, the page loads but
   the player cannot play. The browser console shows CSP errors.
-- Use `https://` origins only. A wildcard host such as `https://*.example.com` is allowed.
+- Use `https://` origins only. You can use a wildcard host, for example `https://*.example.com`.
 
 ### `REAL_IP_FROM`
 
@@ -70,7 +70,7 @@ for requests from these addresses. The rate limits then count each client.
   Kubernetes.
 - Set it to the **pod address range of the Gateway or Ingress controller**. Do not use the
   address of the load balancer. The pods of the controller open the connection to NGINX.
-- If you set it too wide, a client can fake its IP.
+- If you set it too wide, a client can send a false IP.
 - If you leave it empty behind a proxy, all clients share the address of the proxy. The rate
   limit then blocks them together.
 - The prod overlay of Kubernetes has the placeholder `REPLACE_WITH_EDGE_ADDRESS_RANGE`. The
@@ -86,7 +86,7 @@ variables.
 
 | Control | Value |
 |---|---|
-| Rate limit for writes (`POST` on `/api/`) | 5 requests each second for each client IP, burst 10. Then `429`. |
+| Rate limit for writes (all methods except `GET` and `HEAD` on `/api/`, for example `POST`) | 5 requests each second for each client IP, burst 10. Then `429`. |
 | Rate limit for reads (`GET` and `HEAD` on `/api/`) | 20 requests each second for each client IP, burst 40. Then `429`. |
 | Open connections | 20 for each client IP. Then `429`. |
 | Request body | 16 KiB. Then `413`. |
@@ -105,7 +105,8 @@ A reload (`nginx -s reload`) reads the files again, but it does not render the t
 So:
 
 - After a change of a **variable**, restart the container (Compose: `docker compose up -d`,
-  Kubernetes: apply the ConfigMap, which restarts the pods).
+  Kubernetes: change the value in the overlay and run `kubectl apply -k`. Kustomize makes a new ConfigMap
+  with a new name, and the pods restart).
 - After a change of a **template**, build a new image and deploy it.
 - After a change of a **certificate**, run a reload.
 

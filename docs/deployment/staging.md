@@ -1,7 +1,7 @@
 # Staging environments
 
 A staging environment is a temporary copy of the system. It runs the E2E tests through NGINX
-and then it is removed. This guide explains how CI makes the two staging environments, and how
+and then you remove it. This guide explains how CI makes the two staging environments, and how
 you make them on your machine.
 
 Other guides:
@@ -10,11 +10,11 @@ Other guides:
 ## What a staging environment is
 
 - There are two kinds: one with Docker Compose and one with a kind cluster (Kubernetes in Docker).
-- Each one runs NGINX, the app and Postgres from the images that were just built.
-- Each one uses a fake station (`https://station.test`). The E2E suite makes it in the browser.
+- Each one runs NGINX, the app and Postgres from the images that you built for the run.
+- Each one uses a test station (`https://station.test`). The E2E suite serves it in the browser.
   No real stream is needed.
 - Each one uses plain HTTP and no certificate.
-- Each one is removed after the test run, with its data.
+- You remove each one, with its data, after the test run.
 
 ## Rules for the E2E runner
 
@@ -23,7 +23,7 @@ It needs only the address of NGINX.
 
 | Variable | Meaning |
 |---|---|
-| `BASE_URL` | The address of NGINX. Default: `http://localhost:3000/`. |
+| `BASE_URL` | The address of the system under test. Default: `http://localhost:3000/` (the app port, for local development). In staging, set it to NGINX: `http://localhost:8080/`. |
 | `LIVE_STREAM_URL` | The stream for the `@live` scenarios. Default: the first stream in `stream_URL.txt`. |
 
 **On plain HTTP, `BASE_URL` must be a loopback origin** (`localhost` or `127.0.0.1`) that
@@ -45,8 +45,8 @@ CI builds the images from the `Dockerfile`. The build runs the API tests. CI the
 staging environment and runs the E2E image against NGINX. At the end, CI removes the
 environment. The Compose and kind steps use the same commands as the sections below.
 
-The CI workflow is added by issue #10 (`.github/workflows/ci.yml`). If that file is not in your
-checkout yet, use the sections below. They show the same steps by hand.
+This section describes the planned flow. Issue #10 adds the CI workflow (`.github/workflows/ci.yml`),
+and it is not in the repository yet. Until #10 merges, use the sections below. They show the same steps by hand.
 
 | Step | Compose staging | kind staging |
 |---|---|---|
@@ -58,7 +58,7 @@ checkout yet, use the sections below. They show the same steps by hand.
 | Removal | `docker compose ... down -v` | `kind delete cluster` |
 
 The `@live` scenarios use the real station. They run on the CI runner, which has internet
-access, and they do not block the pipeline. The staging NGINX allows both the fake station and
+access, and they do not block the pipeline. The staging NGINX allows both the test station and
 the real station in its CSP.
 
 ## Make the Compose staging environment
@@ -74,7 +74,7 @@ Prerequisites: Docker Engine 25 or later, Docker Compose 2.24.0 or later. The ov
    docker build --target e2e -t radio-learning-e2e:local .
    ```
 
-2. Set the variables. The password is random and used one time:
+2. Set the variables. The password is random:
 
    ```bash
    export POSTGRES_PASSWORD=$(openssl rand -hex 24) STAGING_ID=local HTTP_PORT=8080 \
@@ -89,7 +89,7 @@ Prerequisites: Docker Engine 25 or later, Docker Compose 2.24.0 or later. The ov
 
    The project name is `radio-learning-staging-${STAGING_ID}`. Two stacks with different
    `STAGING_ID` values can run at the same time. They need different `HTTP_PORT` values.
-   The staging file does not build images, so `APP_IMAGE` and `PROXY_IMAGE` are required. The
+   The staging file does not build images, so you must set `APP_IMAGE` and `PROXY_IMAGE`. The
    app reads its stream list from `tests/fixtures/streams.txt` in your checkout.
 
 4. Check it:
@@ -168,7 +168,9 @@ overlay is for Kubernetes 1.37.0, the version of the kind node image in the clus
    ```bash
    deploy/k8s/kind/db-env.sh
    kubectl apply -k deploy/k8s/overlays/staging
-   kubectl --namespace radio-learning wait --for=condition=Ready pod --all --timeout=300s
+   kubectl --namespace radio-learning rollout status statefulset/postgres --timeout=300s
+   kubectl --namespace radio-learning rollout status deployment/radio-learning --timeout=300s
+   kubectl --namespace radio-learning rollout status deployment/radio-learning-proxy --timeout=300s
    ```
 
    `db-env.sh` writes `deploy/k8s/overlays/staging/db.env` with random values. Git ignores it.
@@ -207,5 +209,5 @@ port in `BASE_URL`.
 | Chromium crashes or hangs. | Not enough shared memory. | Add `--shm-size=1g`. |
 | `bind: address already in use` on port 8080. | Another stack uses the port. | Set a different `HTTP_PORT`, and use it in `BASE_URL`. |
 | The `@live` scenarios fail. | The runner cannot reach the real station. | Run them on a machine with internet access. |
-| `kubectl wait` times out on kind. | Calico is not ready, or an image is missing on the node. | Run `kubectl --namespace radio-learning get pods` and `describe pod`. Load the images again. |
+| `kubectl rollout status` times out on kind. | Calico is not ready, or an image is missing on the node. | Run `kubectl --namespace radio-learning get pods` and `describe pod`. Load the images again. |
 | `kustomize build` fails for the staging overlay: `db.env` is missing. | You did not run `db-env.sh`. | Run `deploy/k8s/kind/db-env.sh`. |

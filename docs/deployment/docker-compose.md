@@ -26,9 +26,10 @@ resolves each relative path from the directory of `compose.yaml`.
 ```bash
 git clone https://github.com/batkomahno2008/radio-learning.git
 cd radio-learning
+git checkout <release tag>
 ```
 
-Use a release tag of the repository that agrees with the image tag that you deploy.
+Replace `<release tag>` with the release that you deploy, for example `v1.0.0`. The tag must agree with the image tag.
 
 ## 2. Configure
 
@@ -137,7 +138,7 @@ Compose makes the volume at the first start.
      -v radio-learning_acme:/var/www/acme \
      -v /etc/letsencrypt:/etc/letsencrypt \
      -v /var/lib/letsencrypt:/var/lib/letsencrypt \
-     certbot/certbot certonly --webroot -w /var/www/acme -d radio.example.com
+     certbot/certbot:v4.2.0@sha256:9626d72120577cf72da4fc7948806e9993598981720a4cbe04340a502468d67b certonly --webroot -w /var/www/acme -d radio.example.com
    ```
 
    The standalone mode also works (`--standalone -p 80:80`), but it needs port 80 free. Stop
@@ -191,11 +192,13 @@ Certificates from Let's Encrypt are valid for a short time. Renew them on a sche
 reads the files only at start and at reload, so a renewal needs a reload.
 
 1. Write this script to `/usr/local/bin/radio-learning-renew.sh`. Replace the domain name
-   and the project path.
+   and the path `/opt/radio-learning` (the repository directory).
 
    ```sh
    #!/bin/sh
    set -eu
+   # Cron starts with another working directory. Compose reads .env and COMPOSE_FILE here.
+   cd /opt/radio-learning
    DOMAIN=radio.example.com
    LIVE=/etc/letsencrypt/live/$DOMAIN
    CERTS=/etc/radio-learning/certs
@@ -203,16 +206,16 @@ reads the files only at start and at reload, so a renewal needs a reload.
      -v radio-learning_acme:/var/www/acme \
      -v /etc/letsencrypt:/etc/letsencrypt \
      -v /var/lib/letsencrypt:/var/lib/letsencrypt \
-     certbot/certbot renew --quiet
+     certbot/certbot:v4.2.0@sha256:9626d72120577cf72da4fc7948806e9993598981720a4cbe04340a502468d67b renew --quiet
    install -m 0644 "$LIVE/fullchain.pem" "$CERTS/fullchain.pem"
    install -m 0640 -g 101 "$LIVE/privkey.pem" "$CERTS/privkey.pem"
-   docker compose --project-directory /opt/radio-learning exec -T proxy nginx -s reload
+   docker compose exec -T proxy nginx -s reload
    ```
 
 2. Make the script executable: `sudo chmod 0755 /usr/local/bin/radio-learning-renew.sh`.
 3. Run it each day from cron or from a systemd timer. Certbot renews only when the
    certificate is close to its end date. The reload is safe each day.
-4. Run the script once by hand and read the output.
+4. Run the script by hand one time. Read the output.
 
 `nginx -s reload` starts new workers with the new files. It does not drop open connections.
 The script copies into a directory, not into single mounted files. A directory mount shows
@@ -289,14 +292,32 @@ environment, so they need no password.
 
 ### Back up
 
-```bash
-mkdir -p ~/radio-backups
-docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner' > ~/radio-backups/radio-$(date +%Y%m%d-%H%M%S).sql
-ls -l ~/radio-backups
-```
+1. Write this script to `/usr/local/bin/radio-learning-backup.sh`. Replace the path
+   `/opt/radio-learning` (the repository directory).
 
-The file is plain SQL. Do not write it inside the repository. Keep a copy outside the host. Run the
-command each day from cron. Check that the file is not empty.
+   ```sh
+   #!/bin/sh
+   set -eu
+   # Cron starts with another working directory. Compose reads .env here.
+   cd /opt/radio-learning
+   DIR=/var/backups/radio-learning
+   mkdir -p "$DIR"
+   FILE="$DIR/radio-$(date +%Y%m%d-%H%M%S).sql"
+   docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner' > "$FILE" || { rm -f "$FILE"; exit 1; }
+   test -s "$FILE"
+   find "$DIR" -name 'radio-*.sql' -mtime +14 -delete
+   echo "$FILE"
+   ```
+
+2. Make it executable: `sudo chmod 0755 /usr/local/bin/radio-learning-backup.sh`.
+3. Run it by hand and read the output: `sudo /usr/local/bin/radio-learning-backup.sh`.
+4. Add one line to the crontab of root (`sudo crontab -e`). It runs the script each day at 03:17.
+
+   ```text
+   17 3 * * * /usr/local/bin/radio-learning-backup.sh
+   ```
+
+The file is plain SQL. The script keeps the files of the last 14 days. Keep a copy outside the host.
 
 ### Restore
 
@@ -311,13 +332,14 @@ A restore replaces the ratings table with the content of the file.
 2. Restore the file. Replace the file name.
 
    ```bash
-   docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 --single-transaction' < ~/radio-backups/radio-20260101-030000.sql
+   docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 --single-transaction' < /var/backups/radio-learning/radio-20260101-030000.sql
    ```
 
 3. Start the app and check the data:
 
    ```bash
    docker compose start app
+   docker compose restart proxy
    docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM ratings"'
    curl -s http://localhost/api/ready
    ```
@@ -342,7 +364,7 @@ docker compose down -v              # remove containers AND the data volumes
 | `docker compose` prints `Set POSTGRES_PASSWORD in .env`. | `.env` is missing or has no password. | Copy `.env.example` to `.env`. Set `POSTGRES_PASSWORD`. |
 | `docker compose` prints an error about `!reset` or `start_interval`. | Compose or Docker Engine is too old. | Install Compose 2.24.0 or later and Docker Engine 25 or later. |
 | The browser shows `502 Bad Gateway` or `504 Gateway Timeout` on `/api/`. | NGINX cannot reach the app. The app is down or it restarted. | Run `docker compose ps` and `docker compose logs app`. Restart: `docker compose restart app proxy`. |
-| The app logs `Cannot start: password authentication failed`. | You changed `POSTGRES_PASSWORD` after the first start. The volume keeps the old password. | Put the old password back. Or change it in Postgres: `docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'`, then `ALTER ROLE <user> PASSWORD '<new>';`. |
+| The app logs `Cannot start: password authentication failed`. | You changed `POSTGRES_PASSWORD` after the first start. The volume keeps the old password. | Put the old password back. Or change it in Postgres: `docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'`, then `ALTER ROLE <user> PASSWORD '<new>';`. Then run `docker compose restart app`. |
 | `GET /api/ready` answers `503`. | The app cannot reach the database. | Run `docker compose logs db`. Wait for `db` to be healthy. |
 | Many requests answer `429`. | One client IP is over the rate limit or the connection limit. | Wait. Look at `docker compose logs proxy` for the client. See [NGINX](nginx.md) for the limits. |
 | The page loads but the player is silent. The browser console shows CSP errors. | The origin of the stream is not in `STATION_ORIGINS`. | Add the origin to `.env`. Run `docker compose up -d --wait`. |

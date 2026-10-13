@@ -12,7 +12,7 @@ Other guides:
 
 ## Warning: do not use the retired `ingress-nginx` controller
 
-The community `ingress-nginx` controller of the Kubernetes project is retired (March 2026).
+The community `ingress-nginx` controller of the Kubernetes project retired in March 2026.
 It gets no security fixes. Do not install it for this product. The manifests have no
 `ingress-nginx` annotations.
 
@@ -57,9 +57,10 @@ Get the files:
 ```bash
 git clone https://github.com/batkomahno2008/radio-learning.git
 cd radio-learning
+git checkout <release tag>
 ```
 
-Use a release tag of the repository that agrees with the image tag that you deploy.
+Replace `<release tag>` with the release that you deploy, for example `v1.0.0`. The tag must agree with the image tag.
 Run all commands in this guide from the repository root.
 
 ## 2. Create the namespace and the Secret
@@ -86,7 +87,11 @@ Check that the Secret has four keys:
 kubectl --namespace radio-learning get secret radio-learning-db
 ```
 
-The `DATA` column shows `4`.
+The `DATA` column shows `4`. To read the password back from the Secret, run:
+
+```bash
+kubectl --namespace radio-learning get secret radio-learning-db -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d
+```
 
 ## 3. Set the values of your cluster
 
@@ -260,7 +265,7 @@ Use the `ingress` component. It removes the `HTTPRoute` and adds an `Ingress`.
 3. Apply the overlay: `kubectl apply -k deploy/k8s/overlays/prod`.
 4. Do the rollout checks (section 5).
 
-The pods are replaced one by one. A `preStop` sleep of 5 seconds and the readiness probe
+Kubernetes replaces the pods one by one. A `preStop` sleep of 5 seconds and the readiness probe
 keep requests from reaching a pod that stops.
 
 ### Roll back
@@ -442,29 +447,103 @@ Use this to check a dump or to read old data. The live database does not change.
 ### 8.4 Restore into the live database (disaster recovery)
 
 Use this when the data is lost or wrong. The restore replaces the content of the database.
+Run all steps in the same shell, because step 1 sets a shell variable.
 
-1. Note the number of app replicas, then stop the app:
+1. Record the number of app replicas. Then stop the app.
 
    ```bash
-   kubectl --namespace radio-learning get deployment/radio-learning
+   REPLICAS="$(kubectl --namespace radio-learning get deployment/radio-learning -o jsonpath='{.spec.replicas}')"
+   echo "replicas: $REPLICAS"
    kubectl --namespace radio-learning scale deployment/radio-learning --replicas=0
    ```
 
-2. If the Postgres volume is lost, make an empty Postgres. Scale `statefulset/postgres` to 0,
-   delete `pvc/data-postgres-0`, scale it to 1, and wait until the pod is ready.
-3. Use the pod of section 8.3 with two changes:
-   - Set `TARGET_DB` to `radio` (the value of `POSTGRES_DB`).
-   - Replace the command with only this line:
-     `pg_restore --clean --if-exists --no-owner --dbname="$TARGET_DB" "/backups/$DUMP_FILE"`
-4. Apply the pod. Wait until it succeeds. Delete it.
-5. Start the app again with the old number of replicas, and check the readiness:
+2. Do this step only if the Postgres volume is lost. It makes an empty Postgres.
 
    ```bash
-   kubectl --namespace radio-learning scale deployment/radio-learning --replicas=2
-   kubectl --namespace radio-learning rollout status deployment/radio-learning --timeout=300s
+   kubectl --namespace radio-learning scale statefulset/postgres --replicas=0
+   kubectl --namespace radio-learning delete pvc/data-postgres-0
+   kubectl --namespace radio-learning scale statefulset/postgres --replicas=1
+   kubectl --namespace radio-learning rollout status statefulset/postgres --timeout=300s
    ```
 
-   Then run `curl -s https://radio.example.com/api/ready`.
+3. Find the file name of the dump in the log of a backup job (section 8.1). Then start the restore pod.
+   Replace the value of `DUMP_FILE`.
+
+   ```bash
+   DUMP_FILE=radio-learning-20261012T224546Z.dump
+   cat <<'EOF' | sed "s/REPLACE_DUMP_FILE/$DUMP_FILE/" | kubectl --namespace radio-learning apply -f -
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: radio-learning-restore
+     labels:
+       app.kubernetes.io/name: radio-learning-backup
+   spec:
+     restartPolicy: Never
+     automountServiceAccountToken: false
+     enableServiceLinks: false
+     securityContext:
+       runAsNonRoot: true
+       runAsUser: 70
+       runAsGroup: 70
+       fsGroup: 70
+       seccompProfile:
+         type: RuntimeDefault
+     containers:
+       - name: restore
+         image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+         securityContext:
+           allowPrivilegeEscalation: false
+           readOnlyRootFilesystem: true
+           capabilities:
+             drop: ["ALL"]
+         env:
+           - name: PGHOST
+             value: postgres
+           - name: PGUSER
+             valueFrom:
+               secretKeyRef: {name: radio-learning-db, key: POSTGRES_USER}
+           - name: PGPASSWORD
+             valueFrom:
+               secretKeyRef: {name: radio-learning-db, key: POSTGRES_PASSWORD}
+           - name: DUMP_FILE
+             value: REPLACE_DUMP_FILE
+           - name: TARGET_DB
+             value: radio
+         command:
+           - sh
+           - -c
+           - pg_restore --clean --if-exists --no-owner --dbname="$TARGET_DB" "/backups/$DUMP_FILE"
+         volumeMounts:
+           - {name: backup, mountPath: /backups, readOnly: true}
+           - {name: tmp, mountPath: /tmp}
+     volumes:
+       - name: backup
+         persistentVolumeClaim:
+           claimName: radio-learning-backup
+       - name: tmp
+         emptyDir:
+           sizeLimit: 64Mi
+   EOF
+   ```
+
+   `TARGET_DB` is `radio`, the value of `POSTGRES_DB`.
+
+4. Wait until the pod succeeds. Read the log. Delete the pod.
+
+   ```bash
+   kubectl --namespace radio-learning wait --for=jsonpath='{.status.phase}'=Succeeded pod/radio-learning-restore --timeout=300s
+   kubectl --namespace radio-learning logs radio-learning-restore
+   kubectl --namespace radio-learning delete pod radio-learning-restore
+   ```
+
+5. Start the app with the number of replicas from step 1. Check the rollout.
+
+   ```bash
+   kubectl --namespace radio-learning scale deployment/radio-learning --replicas="$REPLICAS"
+   kubectl --namespace radio-learning rollout status deployment/radio-learning --timeout=300s
+   curl -s https://radio.example.com/api/ready
+   ```
 
 The dump holds the ratings only. The app makes its table again at each start, so a restore
 into a new empty cluster also works.
@@ -477,10 +556,36 @@ into a new empty cluster also works.
   volume must be reachable from that node.
 - The daily dump limits the data loss to 24 hours. Run a backup before each upgrade.
 - The dumps are in the same cluster. Copy them out (section 8.2).
-- The manifests do not rotate the password. To change it: change the Secret, run `ALTER ROLE`
-  in Postgres, and restart the app.
+- The manifests do not rotate the password. See "Change the password" below.
 - A change of the Secret does not restart the pods. A change of a ConfigMap does.
 - High availability is not part of version 1.0.0.
+
+### Change the password
+
+1. Make a new password. Replace the Secret with it. Use hex characters only.
+
+   ```bash
+   PASSWORD="$(openssl rand -hex 24)"
+   kubectl --namespace radio-learning create secret generic radio-learning-db \
+     --from-literal=POSTGRES_USER=radio \
+     --from-literal=POSTGRES_DB=radio \
+     --from-literal=POSTGRES_PASSWORD="$PASSWORD" \
+     --from-literal=DATABASE_URL="postgres://radio:${PASSWORD}@postgres:5432/radio" \
+     --dry-run=client -o yaml | kubectl --namespace radio-learning replace -f -
+   echo "$PASSWORD"
+   ```
+
+2. Change the password in Postgres. Replace `<new password>` with the value from step 1.
+
+   ```bash
+   kubectl --namespace radio-learning exec statefulset/postgres -- psql -U radio -d radio -c "ALTER ROLE radio PASSWORD '<new password>'"
+   ```
+
+3. Restart the app:
+
+   ```bash
+   kubectl --namespace radio-learning rollout restart deployment/radio-learning
+   ```
 
 ## 10. Troubleshooting
 
@@ -495,7 +600,7 @@ into a new empty cluster also works.
 | The site answers `404` or `503` from the edge, not from NGINX. | The `HTTPRoute` or the `Ingress` is not accepted. | Run `kubectl --namespace radio-learning describe httproute radio-learning`. Fix `parentRefs` and `allowedRoutes`. |
 | The site answers `502` or `504` from NGINX. | The app pods are not ready. | Run `kubectl --namespace radio-learning get pods` and `logs deployment/radio-learning`. |
 | `/api/ready` answers `503`. | The app cannot reach Postgres. | Run `kubectl --namespace radio-learning logs statefulset/postgres`. Check the Secret and the NetworkPolicy. |
-| The app logs `password authentication failed`. | The Secret was changed after Postgres made its database. | Run `ALTER ROLE` with the password of the Secret (section 9). |
+| The app logs `password authentication failed`. | The Secret was changed after Postgres made its database. | Run `ALTER ROLE` with the password of the Secret ("Change the password" in section 9). |
 | Many answers are `429`, also for different clients. | `REAL_IP_FROM` is wrong, so NGINX counts all clients as the edge address. | Set the pod range of the edge (section 3.3). |
 | The page loads but the player is silent. The console shows CSP errors. | The stream origin is not in `STATION_ORIGINS`. | Add the origin (section 3.4). Apply again. |
 | Every pod can reach Postgres. | The network plugin does not enforce NetworkPolicy. | Install a plugin that enforces it, for example Calico. |
