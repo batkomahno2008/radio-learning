@@ -10,10 +10,17 @@ const isKey = (value, max) => typeof value === 'string' && value.length > 0 && v
 // Request data in a log line (CodeQL js/log-injection). Remove CR and LF, so that a
 // client cannot add a false log line. Show each other control character as \xNN,
 // because a terminal can run some of them (for example the C1 character 0x9b).
+// Show the line separators (U+2028, U+2029) and the bidi controls (U+202A to U+202E,
+// U+2066 to U+2069) as \uNNNN, because a log viewer can show them as a new line or
+// show the text in a different order.
+const LOG_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/g;
 const forLog = (value) =>
   String(value)
     .replace(/[\r\n]/g, '')
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+    .replace(LOG_UNSAFE, (c) => {
+      const code = c.charCodeAt(0);
+      return code > 0xff ? `\\u${code.toString(16).padStart(4, '0')}` : `\\x${code.toString(16).padStart(2, '0')}`;
+    });
 
 // Totals and the rating of one client for many tracks, in one query. A track with
 // no ratings gets no row. CASE in place of FILTER, because pg-mem has no FILTER.

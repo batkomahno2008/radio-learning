@@ -343,7 +343,11 @@ by hand (`workflow_dispatch`). A new push to a PR cancels the old run of that PR
   actions keep them apart:
   - `.github/actions/staging-compose` and `.github/actions/staging-kind`: input `command`
     is `up`, `logs` or `down`. `up` makes a random Postgres password and gives the
-    outputs `network`, `base-url` and `host-url`.
+    outputs `network`, `base-url` and `host-url`. `staging-kind` also gives `bin-dir`, the
+    directory of the pinned `kind` and `kubectl`.
+  - `staging-kind` does not change `PATH` for later steps (no `GITHUB_PATH`, zizmor
+    `github-env`). A later step that needs the pinned `kubectl` puts `bin-dir` first in
+    its own `PATH`, as the NetworkPolicy step in `ci.yml` does.
   - `.github/actions/run-e2e`: inputs `base-url`, `network`, `tags`, `profile`, `image`
     and `report-dir`. It runs the E2E image with `--shm-size=1g`.
 - `BASE_URL` is always a loopback origin that reaches NGINX: Compose uses

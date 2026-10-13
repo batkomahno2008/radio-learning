@@ -141,6 +141,9 @@ describe('system endpoints', () => {
       const { app } = await make();
       // supertest encodes the path. A raw request sends the characters as the client wrote them.
       // Node itself rejects a control character in the request line, so the path has none.
+      // This test does not fail on the old code: the old 4xx log line gave console.error one
+      // string only, and util.format() gives a single string back with no change. It keeps
+      // the specifiers in the path from becoming format specifiers in a later change.
       const lines = await captureErrors(async () => {
         assert.equal(await postRaw(app, '/api/%s%o%d%j', '{'), 400);
       });
@@ -159,6 +162,8 @@ describe('system endpoints', () => {
           .expect(400);
       });
       assert.equal(lines.length, 1);
+      // \S* allows one more character before \x9b: supertest sends the header as UTF-8
+      // (bytes C2 9B), and Node reads a header value as Latin-1 ("\u00c2" and "\u009b").
       assert.match(lines[0], /^POST \/api\/ratings from 203\.0\.113\.7\S*\\x9b31m%s: 400 entity\.parse\.failed$/);
       assert.doesNotMatch(lines[0], RAW_CONTROL);
     });

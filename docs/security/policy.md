@@ -412,11 +412,11 @@ No accepted item needs an entry in an ignore file of section 5.3: each item is b
 | CVE-2026-85091 (`zlib`, MEDIUM) | S2 `proxy` image | The pinned digest is the newest `nginx-unprivileged` stable image. Update the digest when upstream has the fix. | `role:devops` | 2027-01-11 |
 | 10 HIGH | S2 `e2e` image | CI only. The pipeline never publishes the image. | `role:qa` | 2027-01-11 |
 | CVE-2025-68121 and 24 HIGH (Go `stdlib` in `gosu`) | Postgres image | No newer image: `postgres:18-alpine` has the pinned digest. The entrypoint runs `gosu` only as root. Compose and Kubernetes start Postgres and the backup job as UID 70. | `role:devops` | 2026-11-12 |
-| Web fonts from Google (T12) | CSP, 9.2 | Decision U1 (default). | `@batkomahno2008` | 2027-01-11 |
+| Web fonts from Google (T12) | CSP, 9.2 | The default of decision U1. The user decision on U1 is still open. If the user selects self-hosted fonts, remove this row. | `@batkomahno2008` | 2027-01-11 |
 | A pod in the cluster can send a false `X-Forwarded-For` when `REAL_IP_FROM` is the full pod range | NGINX, 9.3 | It needs an attacker inside the cluster. A client outside the cluster cannot do it. | `role:devops` | 2027-01-11 |
 
 ### 13.3 What blocks `enforce`
 
 - CodeQL `js/missing-rate-limiting`, 3 HIGH in `app.js`. The user decides: accept (NGINX owns the rate limits, 9.3) or add a limiter in the app. If the user accepts, an admin dismisses the 3 alerts in the Security tab with the fields of 5.2.
-- The CodeQL ruleset does not block the old alerts (3.2). So the `security` job passes without them. The switch to `enforce` waits for the decision all the same, because 3.1 counts open alerts on `main`.
+- The CodeQL ruleset does not block the old alerts (3.2). The gate steps of the `security` job do not read CodeQL alerts, so these alerts do not make the job fail. But 3.1 counts the open alerts on `main`. So the switch to `enforce` waits for the decision of the user.
 - A required status check on `main` for the `security` job is a user action (section 4).

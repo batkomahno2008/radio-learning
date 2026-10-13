@@ -344,7 +344,10 @@ jobs:
         env:
           # The pinned kubectl of the staging-kind action.
           KIND_BIN_DIR: ${{ steps.deploy_kind.outputs.bin-dir }}
-        run: PATH="$KIND_BIN_DIR:$PATH" deploy/k8s/kind/netpol-test.sh
+        run: |
+          # Stop when the output is empty, so that PATH never starts with a colon.
+          : "${KIND_BIN_DIR:?The staging-kind action gave no bin-dir output.}"
+          PATH="$KIND_BIN_DIR:$PATH" deploy/k8s/kind/netpol-test.sh
 
       - name: Collect the logs (Docker Compose)
         if: ${{ (failure() || steps.e2e_live.outcome == 'failure') && matrix.target == 'compose' }}
