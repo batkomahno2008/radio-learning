@@ -335,7 +335,8 @@ by hand (`workflow_dispatch`). A new push to a PR cancels the old run of that PR
 | `build` | – | Builds the `test` target (API tests), `runtime` as `radio-learning:ci` and `proxy` as `radio-learning-proxy:ci`, with the four label build arguments. Runs the image checks of #8 (no tests, no npm, no app code in `proxy`). Fills the build cache for `e2e`. Uploads the two images as the artifact `ci-images`. |
 | `manifests` | – | `kubeconform` on the staging and prod overlays (Kubernetes 1.37.0, CRDs-catalog pinned to a commit) and `docker compose config` on the three Compose files. |
 | `staging-e2e` | `build`, `manifests` | Matrix `target: [compose, kind]`. Loads the images, builds `e2e` from the cache, deploys, waits for `/healthz` and `/api/ready` through NGINX, runs the E2E image, then `@live` (does not block, D10). On kind, it also runs `netpol-test.sh`. It always removes the environment. |
-| `publish` | `build`, `manifests`, `staging-e2e` | Only on a push to `main` or a `v*.*.*` tag. Pushes both images to GHCR. |
+| `security` | `build` | Calls `.github/workflows/security.yml` with `mode: report`. Scans the repository and the `ci-images` artifact, and uploads SARIF files to the Security tab. See "Security scans" below. |
+| `publish` | `build`, `manifests`, `staging-e2e`, `security` | Only on a push to `main` or a `v*.*.*` tag. Pushes both images to GHCR. |
 
 - A failed API test stops the run in `build`. Then no staging job and no `publish` job runs.
 - A deploy step only deploys, and an E2E step only runs tests (rule 2.1). The composite
@@ -360,10 +361,40 @@ by hand (`workflow_dispatch`). A new push to a PR cancels the old run of that PR
 - The workflow never changes a manifest. At release time, the operator sets the prod image
   tag with `kustomize edit set image`.
 - `permissions: contents: read` for the workflow. Only `publish` has `packages: write`,
-  `id-token: write` and `attestations: write`. Each action is pinned to a full commit SHA,
-  with the version in a comment. kind, kubectl and kubeconform have a pinned version and
-  a SHA-256 sum.
-- #11 adds the security job to the `needs:` list of `publish`.
+  `id-token: write` and `attestations: write`. Only `security` has `security-events: write`.
+  Each action is pinned to a full commit SHA, with the version in a comment. kind, kubectl
+  and kubeconform have a pinned version and a SHA-256 sum.
+
+### Security scans (`.github/workflows/security.yml`, `docs/security/policy.md`)
+
+The workflow uses existing tools only. The project has no custom scanner, rule, script or
+exception tool (decision of the user, epic #1). `docs/security/policy.md` has the targets,
+the tools with their pinned versions, the gates and the places for exceptions.
+
+- Triggers: `workflow_call` (the `security` job of `ci.yml`) and a nightly `schedule`.
+  The night run scans the published images with tag `main` and always uses `report` mode.
+- Input `mode`: `report` (now) or `enforce`. In `report` mode the job passes. In both modes
+  it writes a summary table (`$GITHUB_STEP_SUMMARY`) with the result counts of each tool for
+  each severity, and the result of each scan, gate and SARIF upload step. `enforce` fails
+  on a failed gate step. Issue #13 changes the value in `ci.yml`.
+- The CodeQL gate is not in the workflow. It is a code scanning ruleset ("Require code
+  scanning results", High or higher) that an admin sets (policy section 3.2, S8).
+- Jobs: `repo` (S1, S3, S4, S5, S7 history, S8, S9), `images` (matrix `runtime` and
+  `proxy`: S2, S7 images, S6) and `e2e-image` (S2, report only). `images` loads the images
+  from the artifact `ci-images`. `e2e-image` builds the `e2e` image from the build cache.
+- The gitleaks scan reads all branches. A branch with a secret, also a fake one, makes the
+  S7 gate fail until you delete the branch.
+- Tools: Trivy (npm, images, Dockerfile, Kubernetes), KICS (Compose), Gixy-Next (NGINX
+  config from `nginx -T` of the `proxy` image), gitleaks (history), CodeQL (JavaScript and
+  workflows), zizmor (workflows). KICS, Gixy-Next and gitleaks run from their official
+  images, pinned by digest. The other tools run from their official Actions.
+- Each scan uploads a SARIF file with its own category. The artifacts `security-sarif-*`
+  keep the files for 7 days.
+- To accept a risk, use the ignore file of the tool (`.trivyignore`, `.gitleaksignore`,
+  `.github/zizmor.yml`, a KICS comment, `--skips` of Gixy-Next, a CodeQL dismissal). Write
+  the reason, the owner and the expiry date next to the entry (policy section 5).
+- To change a tool, change its version and its pin together. The `env` block of
+  `security.yml` has the versions and the digests.
 
 ## Tests
 

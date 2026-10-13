@@ -1,0 +1,624 @@
+# Security scans (epic #1, issue #11). docs/security/policy.md has the policy.
+#
+# The workflow runs existing tools only. It has no custom scanner, rule or check.
+# Each tool writes a SARIF file. The workflow uploads each file to the GitHub Security
+# tab (code scanning) with its own category, and prints a summary table.
+#
+#   ci.yml, job "security" (after "build")   scans the images from the build artifact
+#   schedule (each night)                    scans the published images, tag "main"
+#
+# Input "mode":
+#   report   (now)  the job passes. The summary table shows the gate result of each scan.
+#   enforce         the job fails when a gate fails (policy section 3).
+#
+# Targets and tools (policy section 2). Versions and digests are in "env" below.
+#   S1  npm dependencies         Trivy (fs)
+#   S2  OS packages of images    Trivy (image): runtime, proxy and e2e
+#   S3  Dockerfile               Trivy (config)
+#   S4  Compose files            KICS
+#   S5  Kubernetes files         Trivy (config)
+#   S6  NGINX config             Gixy-Next, on the config that the proxy image renders
+#   S7  secrets                  gitleaks (Git history), Trivy (image files)
+#   S8  source code              CodeQL (javascript-typescript)
+#   S9  GitHub Actions           zizmor, CodeQL (actions)
+#
+# Pin each action to a full commit SHA. The comment gives the version.
+# Pin each tool image to a digest. The tag is for the reader.
+name: Security
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "report: the scans pass and write a summary. enforce: the scans fail on the policy gate."
+        type: string
+        required: false
+        default: report
+  schedule:
+    # A time that is not on the hour, to avoid the busy start of the hour.
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+env:
+  # The schedule event has no inputs, so it always runs in report mode.
+  MODE: ${{ inputs.mode || 'report' }}
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
+  GHCR_APP: ghcr.io/batkomahno2008/radio-learning
+  GHCR_PROXY: ghcr.io/batkomahno2008/radio-learning-proxy
+  # Trivy: the version of the binary that trivy-action installs.
+  TRIVY_VERSION: v0.75.0
+  # zizmor: the version must be in the support/versions file of the pinned zizmor-action.
+  ZIZMOR_VERSION: 1.30.1
+  KICS_IMAGE: checkmarx/kics:v2.1.20@sha256:3e5a268eb8adda2e5a483c9359ddfc4cd520ab856a7076dc0b1d8784a37e2602
+  GIXY_IMAGE: megamansec/gixy-next:0.8.0@sha256:e25808a033b553c1d4189f98c9d96ebd5bd1cf89b3e9f482842bbf6f8023db09
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+
+jobs:
+  # Scans of the repository: S1, S3, S4, S5, S7 (history), S8 and S9.
+  repo:
+    name: Repository scans
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # CodeQL reads the workflow run data.
+      actions: read
+      security-events: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The secret scan reads the whole Git history. This fetches all branches,
+          # and gitleaks reads all of them (policy S7).
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Make the SARIF directory
+        shell: bash
+        run: mkdir -p "$RUNNER_TEMP/sarif"
+
+      # S1: the npm packages in package-lock.json, with the dev dependencies.
+      # Each Trivy scan runs two times. The first run writes all findings to SARIF.
+      # The second run applies the gate of the policy: CRITICAL and HIGH with a fix.
+      - name: S1 npm dependencies, SARIF (Trivy)
+        id: s1_sarif
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_INCLUDE_DEV_DEPS: "true"
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          format: sarif
+          output: ${{ runner.temp }}/sarif/S1-trivy-npm.sarif
+          hide-progress: true
+
+      - name: S1 npm dependencies, gate (Trivy)
+        id: s1_gate
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_INCLUDE_DEV_DEPS: "true"
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          skip-setup-trivy: true
+          cache: false
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+          hide-progress: true
+
+      - name: S1 upload SARIF
+        id: s1_upload
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: ${{ runner.temp }}/sarif/S1-trivy-npm.sarif
+          category: trivy-npm
+
+      # S3: all stages of the Dockerfile.
+      - name: S3 Dockerfile, SARIF (Trivy)
+        id: s3_sarif
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          skip-setup-trivy: true
+          cache: false
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: config
+          scan-ref: Dockerfile
+          format: sarif
+          output: ${{ runner.temp }}/sarif/S3-trivy-dockerfile.sarif
+          hide-progress: true
+
+      - name: S3 Dockerfile, gate (Trivy)
+        id: s3_gate
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          skip-setup-trivy: true
+          cache: false
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: config
+          scan-ref: Dockerfile
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          format: table
+          hide-progress: true
+
+      - name: S3 upload SARIF
+        id: s3_upload
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: ${{ runner.temp }}/sarif/S3-trivy-dockerfile.sarif
+          category: trivy-dockerfile
+
+      # S5: the Kubernetes manifests. The overlays change only the replica count, the
+      # image tags, the storage size and the Service type. So the base files hold all
+      # security settings. Trivy does not render Kustomize.
+      - name: S5 Kubernetes files, SARIF (Trivy)
+        id: s5_sarif
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          skip-setup-trivy: true
+          cache: false
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: config
+          scan-ref: deploy/k8s
+          format: sarif
+          output: ${{ runner.temp }}/sarif/S5-trivy-kubernetes.sarif
+          hide-progress: true
+
+      - name: S5 Kubernetes files, gate (Trivy)
+        id: s5_gate
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          skip-setup-trivy: true
+          cache: false
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: config
+          scan-ref: deploy/k8s
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          format: table
+          hide-progress: true
+
+      - name: S5 upload SARIF
+        id: s5_upload
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: ${{ runner.temp }}/sarif/S5-trivy-kubernetes.sarif
+          category: trivy-kubernetes
+
+      # S4: the Compose files. KICS runs from its image, which is pinned by digest.
+      # The KICS action builds a new image at each run from an unpinned base image.
+      # KICS writes the SARIF file with all findings. It fails on HIGH and CRITICAL.
+      - name: S4 Compose files (KICS)
+        id: s4_kics
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --name sec-kics --user "$(id -u):$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/work:ro" -v "$RUNNER_TEMP/sarif:/out" -w /work \
+            "$KICS_IMAGE" scan -q /app/bin/assets/queries \
+            -p compose.yaml,deploy/compose \
+            -o /out --output-name S4-kics-compose --report-formats sarif \
+            --no-progress --disable-secrets --fail-on high,critical
+
+      - name: S4 upload SARIF
+        id: s4_upload
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: ${{ runner.temp }}/sarif/S4-kics-compose.sarif
+          category: kics-compose
+
+      # S7: all commits in the Git history. gitleaks runs from its image. The gitleaks
+      # action needs a license for an organization, and it scans only the commits of the
+      # pull request. --redact keeps the secret value out of the log and the report.
+      - name: S7 secrets in the Git history (gitleaks)
+        id: s7_gitleaks
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --name sec-gitleaks --user "$(id -u):$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/repo:ro" -v "$RUNNER_TEMP/sarif:/out" \
+            "$GITLEAKS_IMAGE" git /repo \
+            --gitleaks-ignore-path /repo \
+            --report-format sarif --report-path /out/S7-gitleaks-history.sarif \
+            --redact --no-banner --exit-code 1
+
+      - name: S7 upload SARIF
+        id: s7_upload
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: ${{ runner.temp }}/sarif/S7-gitleaks-history.sarif
+          category: gitleaks
+
+      # S9: workflows and composite actions. The first run uploads the SARIF file itself
+      # (category "zizmor"). The second run applies the gate: MEDIUM or higher.
+      # MEDIUM covers the checks of policy section 8.1 (for example, the permissions).
+      - name: S9 workflows, SARIF (zizmor)
+        id: s9_sarif
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          version: ${{ env.ZIZMOR_VERSION }}
+          advanced-security: true
+          color: false
+
+      - name: S9 workflows, keep the SARIF file
+        if: ${{ !cancelled() && steps.s9_sarif.outputs.output-file != '' }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        shell: bash
+        env:
+          ZIZMOR_SARIF: ${{ steps.s9_sarif.outputs.output-file }}
+        run: cp "$ZIZMOR_SARIF" "$RUNNER_TEMP/sarif/S9-zizmor-workflows.sarif"
+
+      - name: S9 workflows, gate (zizmor)
+        id: s9_gate
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          version: ${{ env.ZIZMOR_VERSION }}
+          advanced-security: false
+          min-severity: medium
+          color: false
+
+      # S8 and S9: CodeQL for JavaScript and for GitHub Actions workflows. The analyze
+      # step uploads the SARIF files (one category for each language).
+      - name: CodeQL, initialize
+        id: codeql_init
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          languages: javascript-typescript,actions
+          build-mode: none
+
+      - name: CodeQL, analyze
+        id: codeql
+        if: ${{ !cancelled() && steps.codeql_init.outcome == 'success' }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          output: ${{ runner.temp }}/sarif/codeql
+          upload: always
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/security-summary
+        with:
+          title: Repository scans
+          sarif-dir: ${{ runner.temp }}/sarif
+          mode: ${{ env.MODE }}
+          # CodeQL has no exit code for findings, and a dismissal in the Security tab
+          # is not in the local SARIF file. So this job has no CodeQL gate. A code
+          # scanning ruleset gives it (policy 3.2, S8).
+          # A row for an upload shows FAIL when the upload of the SARIF file failed.
+          gates: |
+            S1 npm, SARIF run=${{ steps.s1_sarif.outcome }}
+            S1 npm, gate=${{ steps.s1_gate.outcome }}
+            S1 npm, upload SARIF=${{ steps.s1_upload.outcome }}
+            S3 Dockerfile, SARIF run=${{ steps.s3_sarif.outcome }}
+            S3 Dockerfile, gate=${{ steps.s3_gate.outcome }}
+            S3 Dockerfile, upload SARIF=${{ steps.s3_upload.outcome }}
+            S5 Kubernetes, SARIF run=${{ steps.s5_sarif.outcome }}
+            S5 Kubernetes, gate=${{ steps.s5_gate.outcome }}
+            S5 Kubernetes, upload SARIF=${{ steps.s5_upload.outcome }}
+            S4 Compose (KICS)=${{ steps.s4_kics.outcome }}
+            S4 Compose, upload SARIF=${{ steps.s4_upload.outcome }}
+            S7 Git history (gitleaks)=${{ steps.s7_gitleaks.outcome }}
+            S7 Git history, upload SARIF=${{ steps.s7_upload.outcome }}
+            S9 workflows, SARIF run and upload=${{ steps.s9_sarif.outcome }}
+            S9 workflows, gate=${{ steps.s9_gate.outcome }}
+            S8 S9 CodeQL, analyze and upload=${{ steps.codeql.outcome }}
+
+      - name: Upload the SARIF files
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: security-sarif-repo
+          path: ${{ runner.temp }}/sarif
+          retention-days: 7
+          if-no-files-found: warn
+
+  # Scans of the two published images (S2, S6, S7). A pull request and a push scan the
+  # images from the build artifact. The night scan pulls the images with tag "main".
+  images:
+    name: Image scans (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      # The night scan pulls the images from GHCR.
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: runtime
+            published: ghcr.io/batkomahno2008/radio-learning
+            local: radio-learning:ci
+          - name: proxy
+            published: ghcr.io/batkomahno2008/radio-learning-proxy
+            local: radio-learning-proxy:ci
+    env:
+      IMAGE: ${{ github.event_name == 'schedule' && format('{0}:main', matrix.published) || matrix.local }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Make the SARIF directory
+        shell: bash
+        run: mkdir -p "$RUNNER_TEMP/sarif"
+
+      # Pull request and push: the images that the "build" job saved (ci.yml).
+      - name: Download the images
+        if: ${{ github.event_name != 'schedule' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-images
+          path: ${{ runner.temp }}/images
+
+      - name: Load the images
+        if: ${{ github.event_name != 'schedule' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker load -i "$RUNNER_TEMP/images/images.tar"
+          rm -f "$RUNNER_TEMP/images/images.tar"
+
+      # Night: the published images.
+      - name: Log in to GHCR
+        if: ${{ github.event_name == 'schedule' }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull the image
+        if: ${{ github.event_name == 'schedule' }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        shell: bash
+        run: docker pull "$IMAGE"
+
+      # S2 and S7: OS packages, application packages and secrets in the files of the image.
+      - name: S2 S7 image, SARIF (Trivy)
+        id: s2_sarif
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: image
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln,secret
+          format: sarif
+          output: ${{ runner.temp }}/sarif/S2-trivy-${{ matrix.name }}.sarif
+          hide-progress: true
+
+      - name: S2 image packages, gate (Trivy)
+        id: s2_gate
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          skip-setup-trivy: true
+          cache: false
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: image
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+          hide-progress: true
+
+      # A secret of any severity fails the gate (policy 3.2, S7).
+      - name: S7 image secrets, gate (Trivy)
+        id: s7_gate
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          skip-setup-trivy: true
+          cache: false
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: image
+          image-ref: ${{ env.IMAGE }}
+          scanners: secret
+          exit-code: "1"
+          format: table
+          hide-progress: true
+
+      - name: S2 S7 upload SARIF
+        id: s2_upload
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: ${{ runner.temp }}/sarif/S2-trivy-${{ matrix.name }}.sarif
+          category: trivy-image-${{ matrix.name }}
+
+      # S6: the NGINX config. The proxy image renders its templates at start. "nginx -T"
+      # makes the entrypoint write the config, tests it, and prints all the files. The
+      # file goes to the workspace, so the SARIF locations point to a file in the checkout.
+      # REAL_IP_FROM is set, so that the real client IP block is in the config.
+      - name: S6 NGINX config, render
+        if: ${{ !cancelled() && matrix.name == 'proxy' }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --name sec-nginx-render \
+            -e NGINX_ENTRYPOINT_QUIET_LOGS=1 \
+            -e APP_UPSTREAM=127.0.0.1:3000 \
+            -e "STATION_ORIGINS=https://station.test https://d3d4yli4hf5bmh.cloudfront.net" \
+            -e REAL_IP_FROM=10.0.0.0/8 \
+            "$IMAGE" nginx -T > "$GITHUB_WORKSPACE/nginx-rendered.conf"
+          head -n 3 "$GITHUB_WORKSPACE/nginx-rendered.conf"
+
+      - name: S6 NGINX config (Gixy-Next)
+        id: s6_gixy
+        if: ${{ !cancelled() && matrix.name == 'proxy' }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --name sec-gixy --user "$(id -u):$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/work" -v "$RUNNER_TEMP/sarif:/out" -w /work \
+            "$GIXY_IMAGE" gixy -f sarif -o /out/S6-gixy-nginx.sarif nginx-rendered.conf
+
+      - name: S6 upload SARIF
+        id: s6_upload
+        if: ${{ !cancelled() && matrix.name == 'proxy' }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: ${{ runner.temp }}/sarif/S6-gixy-nginx.sarif
+          category: gixy-nginx
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/security-summary
+        with:
+          title: Image scans (${{ matrix.name }}, ${{ env.IMAGE }})
+          sarif-dir: ${{ runner.temp }}/sarif
+          mode: ${{ env.MODE }}
+          gates: |
+            S2 S7 image, SARIF run=${{ steps.s2_sarif.outcome }}
+            S2 image packages, gate=${{ steps.s2_gate.outcome }}
+            S7 image secrets, gate=${{ steps.s7_gate.outcome }}
+            S2 S7 image, upload SARIF=${{ steps.s2_upload.outcome }}
+            S6 NGINX config (Gixy-Next)=${{ steps.s6_gixy.outcome }}
+            S6 NGINX config, upload SARIF=${{ steps.s6_upload.outcome }}
+
+      - name: Upload the SARIF files
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: security-sarif-images-${{ matrix.name }}
+          path: ${{ runner.temp }}/sarif
+          retention-days: 7
+          if-no-files-found: warn
+
+  # S2 for the e2e image. The pipeline never publishes this image, so the scan only
+  # reports (policy 3.2). The image comes from the build cache of the "build" job.
+  e2e-image:
+    name: Image scan (e2e)
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Make the SARIF directory
+        shell: bash
+        run: mkdir -p "$RUNNER_TEMP/sarif"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the E2E image from the cache
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: e2e
+          load: true
+          tags: radio-learning-e2e:ci
+          cache-from: type=gha,scope=e2e
+
+      - name: S2 e2e image, SARIF (Trivy)
+        id: s2_sarif
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          scan-type: image
+          image-ref: radio-learning-e2e:ci
+          scanners: vuln
+          format: sarif
+          output: ${{ runner.temp }}/sarif/S2-trivy-e2e.sarif
+          hide-progress: true
+
+      - name: S2 e2e image upload SARIF
+        id: s2_upload
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ env.MODE != 'enforce' }}
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: ${{ runner.temp }}/sarif/S2-trivy-e2e.sarif
+          category: trivy-image-e2e
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/security-summary
+        with:
+          title: Image scan (e2e, report only)
+          sarif-dir: ${{ runner.temp }}/sarif
+          mode: ${{ env.MODE }}
+          gates: |
+            S2 e2e image, SARIF run=${{ steps.s2_sarif.outcome }}
+            S2 e2e image, upload SARIF=${{ steps.s2_upload.outcome }}
+
+      - name: Upload the SARIF files
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: security-sarif-images-e2e
+          path: ${{ runner.temp }}/sarif
+          retention-days: 7
+          if-no-files-found: warn

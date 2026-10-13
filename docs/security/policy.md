@@ -1,8 +1,11 @@
 # Security policy
 
 This policy tells what the pipeline must scan and when a finding must stop a release.
-Issue #4 selects the tools for this policy. Issue #16 applies the edge controls in NGINX.
-This document names no tool. The words "the scanner" mean the tool that #4 selects for a target.
+Issue #11 puts the scans in CI. Issue #16 applies the edge controls in NGINX.
+
+Decision of the user (epic #1, 2026-10-13): the project writes no custom scanner, rule, script
+or exception tool. The pipeline uses existing tools and their official GitHub Actions only.
+Section 2 names the tool for each target. The words "the scanner" mean that tool.
 
 ## 1. Terms
 
@@ -14,23 +17,56 @@ This document names no tool. The words "the scanner" mean the tool that #4 selec
 | Gate violation | A finding that agrees with the fail rule of its target in section 3 and has no valid exception. |
 | Published image | `ghcr.io/batkomahno2008/radio-learning` or `ghcr.io/batkomahno2008/radio-learning-proxy`. |
 
-## 2. Scan scope
+## 2. Scan scope and tools
 
 The pipeline must scan each target in this table. Each row has a fail rule in section 3.
+The workflow `.github/workflows/security.yml` runs all scans. Section 2.1 gives the versions.
 
-| ID | Target | What the scan examines |
-|---|---|---|
-| S1 | npm dependencies | All packages in `package-lock.json`, direct and transitive. |
-| S2 | OS packages of the images | The `runtime` image, the `proxy` image and the `e2e` image. |
-| S3 | Dockerfile | All stages of the multi-stage `Dockerfile`. |
-| S4 | Compose files | `compose.yaml` and all files in `deploy/compose/`. |
-| S5 | Kubernetes files | The rendered output of each Kustomize overlay in `deploy/k8s/`. |
-| S6 | NGINX config | `deploy/nginx/nginx.conf` and `deploy/nginx/templates/`. |
-| S7 | Secrets | All commits in the Git history, and the file system of each image. |
-| S8 | Source code (SAST) | All JavaScript in the repository, server code and client code. |
-| S9 | GitHub Actions workflows | `.github/workflows/` and `.github/actions/`. |
-| S10 | HTTP headers of a running stack | The responses of NGINX on the staging stack (Compose and kind). |
-| S11 | Supply chain | Action pins, base image pins, SBOM and provenance (section 8). |
+| ID | Target | What the scan examines | Tool |
+|---|---|---|---|
+| S1 | npm dependencies | All packages in `package-lock.json`: direct, transitive and dev. | Trivy (`fs` scan) |
+| S2 | OS packages of the images | The `runtime` image and the `proxy` image. The `e2e` image is a report only. | Trivy (`image` scan) |
+| S3 | Dockerfile | All stages of the multi-stage `Dockerfile`. | Trivy (`config` scan) |
+| S4 | Compose files | `compose.yaml` and all files in `deploy/compose/`. | KICS |
+| S5 | Kubernetes files | All files in `deploy/k8s/`. | Trivy (`config` scan) |
+| S6 | NGINX config | The config that the `proxy` image renders at start (`nginx -T`). | Gixy-Next |
+| S7 | Secrets | All commits of all branches in the Git history, and the files of the `runtime` and `proxy` images. | gitleaks (history), Trivy (images) |
+| S8 | Source code (SAST) | All JavaScript in the repository, server code and client code. | CodeQL |
+| S9 | GitHub Actions workflows | `.github/workflows/` and `.github/actions/`. | zizmor, CodeQL |
+| S10 | HTTP headers of a running stack | No scan. See 2.2. | – |
+| S11 | Supply chain | Action pins are part of S9. No scan checks the other parts. See 2.2. | zizmor (pins) |
+
+### 2.1 Tools and pinned versions
+
+Each tool is an existing tool. Each Action is pinned to a full commit SHA. Each tool image is pinned to a digest.
+The tag or version is for the reader.
+
+| Tool | Version | How it runs | Pin |
+|---|---|---|---|
+| Trivy | v0.75.0 | `aquasecurity/trivy-action` v0.36.0 | `ed142fd0673e97e23eac54620cfb913e5ce36c25` |
+| KICS | v2.1.20 | The image `checkmarx/kics` | `sha256:3e5a268eb8adda2e5a483c9359ddfc4cd520ab856a7076dc0b1d8784a37e2602` |
+| Gixy-Next | 0.8.0 | The image `megamansec/gixy-next` | `sha256:e25808a033b553c1d4189f98c9d96ebd5bd1cf89b3e9f482842bbf6f8023db09` |
+| gitleaks | v8.30.1 | The image `ghcr.io/gitleaks/gitleaks` | `sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f` |
+| CodeQL | The bundle that the Action selects | `github/codeql-action` v4.38.0: `init`, `analyze` and `upload-sarif` | `b96794f015dfd88f77b49b1c93e0fa7110f94c63` |
+| zizmor | 1.30.1 | `zizmorcore/zizmor-action` v0.6.4. The Action runs the zizmor image by digest. | `cc914d7f3750a2d13d75c7f184a1060aa0e9d482` |
+
+- The KICS Action builds a new image at each run from an unpinned base image. So the workflow runs the official KICS image.
+- The gitleaks Action needs a license for an organization, and it scans only the commits of a pull request. So the workflow runs the official gitleaks image.
+- Gixy-Next has no Action. The workflow runs its official image.
+- The Trivy Action installs the Trivy binary by version number. So the Trivy binary has a version pin, and the Action has a SHA pin.
+- Change a version and its pin together. The `env` block of `security.yml` holds the tool versions and the image digests.
+- CodeQL uses the default query suite for `javascript-typescript` and for `actions`.
+
+### 2.2 What the scans do not cover
+
+The user decided that the project writes no custom checks. So some rules of this policy have no automatic check.
+A reviewer checks them in each pull request that changes the related files.
+
+- **S10 (headers of a running stack).** The values of 9.1, 9.3, 9.4 and 9.6 need requests to a running stack. No existing tool in section 2 does this. The E2E suite fails on a CSP violation (9.2). It does not check the other values.
+- **S11 (supply chain).** The `publish` job creates the SBOM and the provenance (8.3). No scan checks them. No scan checks the digest pins of base images (8.2).
+- **TLS (9.5).** Gixy-Next does not check protocols and ciphers. The render step has no TLS file.
+- **Run-time baseline (section 7).** The built-in checks of Trivy and KICS apply. No scan proves R8 (only NGINX is reachable) or R9 (no secret in a manifest) completely.
+- **Postgres image.** The pipeline does not build it, so the scans do not examine it.
 
 ## 3. Severity gate
 
@@ -42,23 +78,30 @@ The pipeline must scan each target in this table. Each row has a fail rule in se
 
 ### 3.2 Pass or fail rule for each target
 
+Each gate is a setting of the tool itself. The workflow has no gate logic of its own.
+CodeQL has no gate setting. So its gate is a code scanning ruleset (see S8).
+
 | ID | The scan fails when | The scan passes when |
 |---|---|---|
-| S1 | One or more CRITICAL or HIGH findings have a fix available. | The count of such findings is 0. |
-| S2 | One or more CRITICAL or HIGH findings in the `runtime` or `proxy` image have a fix available. | The count of such findings is 0. The scan reports findings in the `e2e` image only. The pipeline does not publish that image. |
-| S3 | One or more CRITICAL or HIGH misconfiguration findings occur, or a check of section 7 or 8.2 fails. | The count of such findings is 0. |
-| S4 | One or more CRITICAL or HIGH misconfiguration findings occur, or a check of section 7 fails. | The count of such findings is 0. |
-| S5 | One or more CRITICAL or HIGH misconfiguration findings occur, or a check of section 7 fails. | The count of such findings is 0. |
-| S6 | One or more CRITICAL or HIGH misconfiguration findings occur, or a check of section 9 fails in the config. The TLS checks of 9.5 are part of S6. | The count of such findings is 0. |
-| S7 | The scan finds one or more secrets. All severities count. | The count of secrets is 0. |
-| S8 | One or more CRITICAL or HIGH findings occur. If the scanner gives a SARIF `security-severity`, a value of 7.0 or more is HIGH. | The count of such findings is 0. |
-| S9 | One or more CRITICAL or HIGH findings occur, or a check of section 8.1 fails. | The count of such findings is 0. |
-| S10 | One or more checks of 9.1, 9.2, 9.3, 9.4 or 9.6 fail on the running stack. | All these checks pass. |
-| S11 | One or more checks of section 8 fail. | All checks of section 8 pass. |
+| S1 | Trivy finds one or more CRITICAL or HIGH vulnerabilities that have a fix available (`--severity CRITICAL,HIGH --ignore-unfixed`). | The count of such findings is 0. |
+| S2 | Trivy finds one or more CRITICAL or HIGH vulnerabilities that have a fix available, in the `runtime` or `proxy` image. | The count of such findings is 0. The scan reports findings in the `e2e` image only. The pipeline does not publish that image. |
+| S3 | Trivy finds one or more CRITICAL or HIGH misconfigurations. | The count of such findings is 0. |
+| S4 | KICS finds one or more CRITICAL or HIGH results (`--fail-on high,critical`). | The count of such results is 0. |
+| S5 | Trivy finds one or more CRITICAL or HIGH misconfigurations. | The count of such findings is 0. |
+| S6 | Gixy-Next finds one or more problems, of any level. Gixy-Next gives the level LOW to its weakest checks, for example version disclosure (9.6). | The count of problems is 0. |
+| S7 | gitleaks finds one or more secrets in the history of any branch, or Trivy finds one or more secrets in an image. All severities count. See 3.3 for the branches. | The count of secrets is 0. |
+| S8 | CodeQL has one or more open alerts of level High or higher (`security-severity` of 7.0 or more). A code scanning ruleset blocks the merge (see below). | No open alert of that level. A dismissal in the Security tab closes an alert. |
+| S9 | zizmor finds one or more problems of level MEDIUM or higher, or CodeQL (`actions`) has one or more open alerts of level High or higher (ruleset, see S8). MEDIUM covers the checks of 8.1. | The count of such findings is 0. |
+| S10 | – (no scan) | – |
+| S11 | – (no scan). The pins of S9 follow the S9 rule. | – |
+
+The CodeQL gate for S8 and S9 needs a code scanning ruleset with the rule "Require code scanning results" for the tool CodeQL.
+Set the security alert threshold to "High or higher". The workflow does not read the local SARIF file for this gate, because the file does not show a dismissal.
+An admin of the repository sets the ruleset. This is a user action (see section 4).
 
 For S3 to S9, "fix available" does not apply. A change to the file or the code is always possible.
 
-The staging stacks use plain HTTP (D14). S10 runs the checks of 9.1 to 9.4 and 9.6 on them. S10 does not run the TLS checks of 9.5. S6 examines the TLS config.
+The staging stacks use plain HTTP (D14). No scan examines the TLS config of 9.5 (see 2.2).
 
 ### 3.3 Special rule for secrets
 
@@ -71,19 +114,25 @@ If S7 finds a real secret, do these steps in the same day:
 
 A public issue or a public comment must not hold a secret value or the details of an exploit.
 
+The S7 history scan covers all branches, not only the branch of the run. The repository is public, so a secret on any branch is public.
+A test branch with a real or a fake secret makes the S7 gate fail until you delete the branch.
+
 ## 4. Rollout mode
 
 The gate has two modes.
 
 | Mode | Behavior |
 |---|---|
-| `report` | All scans run and upload their results (section 6). The job ends with success. The job summary shows the count of gate violations for each target. |
+| `report` | All scans run and upload their results (section 6). The job ends with success. The job summary shows the count of results for each severity, and the gate result of each scan. |
 | `enforce` | All scans run and upload their results. The job fails when one or more gate violations occur. The job is a required status check on `main`. |
 
 - The gate starts in `report` mode.
 - Issue #13 changes the gate to `enforce` mode after the remediation.
 - A required status check on `main` needs admin access to the repository. Issue #13 must ask the user to set it.
-- Keep the mode in one setting in the repository, so that one change switches all scans.
+- The CodeQL gate needs a code scanning ruleset (see S8 in 3.2). Only an admin sets it. Issue #13 must ask the user to set it, with the rule "Require code scanning results" and the threshold "High or higher".
+- The input `mode` of `.github/workflows/security.yml` sets the mode. The `security` job in `ci.yml` gives the value. Change that one line to switch all scans.
+- The night scan always runs in `report` mode.
+- The `publish` job waits for the `security` job.
 - Do not publish a release tag (`vX.Y.Z`) while the gate is in `report` mode.
 
 ## 5. Exceptions
@@ -92,34 +141,57 @@ An exception lets a known finding stay open. Most exceptions have a limited time
 
 ### 5.1 Rules
 
-- Keep the exceptions for each tool in one file in the repository. Issue #4 sets the file name and the format.
-- Each exception must have all fields of the table in 5.2. The scan must ignore an exception that has a missing field.
+- Accept a risk only in the ignore file of the tool, or by a dismissal in the Security tab. Section 5.3 lists the places.
+- Do not write an exception tool, an exception file format or a check of the exceptions.
+- Each exception must have all fields of the table in 5.2. The ignore files of the tools have no such fields. So write the fields in comment lines above the entry.
 - An exception applies to one finding ID in one target. Do not use wildcards.
 - Use these maximum times to expiry:
   - CRITICAL finding: 30 days.
   - HIGH finding: 90 days.
   - Finding with no severity, or a failed check of section 7, 8 or 9: 90 days.
   - Secret that you revoked or rotated (3.3): no expiry. Write `never` in `expires`. Write the revocation date in `reason`.
-- After the expiry date, the finding is a gate violation again. Extend an exception only with a new review.
-- The Security Specialist (`role:security`) approves each new exception in the pull request review.
+- After the expiry date, the finding is a gate violation again. Remove the entry. Extend an exception only with a new review.
+- The Security Specialist (`role:security`) approves each new exception in the pull request review. The reviewer rejects an exception that has a missing field.
 
 ### 5.2 Fields
 
 | Field | Example | Rule |
 |---|---|---|
-| `id` | `EXC-001` | Unique in the repository. Do not use an ID again. |
 | `finding` | `CVE-2026-12345` | The ID that the scanner reports. |
 | `target` | `S2 runtime image` | One target from section 2. |
 | `reason` | No fix is available upstream. The vulnerable function is not used. | Tell why the risk is acceptable. |
 | `owner` | `@batkomahno2008` | A person or a role label. The owner removes the exception when a fix is available. |
 | `expires` | `2026-12-31` | ISO 8601 date, or `never` for a revoked secret only. Section 5.1 gives the maximum. |
 
+### 5.3 Where to write an exception
+
+| Tool | Place | Note |
+|---|---|---|
+| Trivy | `.trivyignore` in the repository root | One finding ID on each line. Add `exp:YYYY-MM-DD` to the line. Trivy reads the file by itself. After the date, Trivy does not ignore the finding. |
+| gitleaks | `.gitleaksignore` in the repository root | One fingerprint on each line. A line that starts with `#` is a comment. The workflow gives the file to gitleaks. |
+| KICS | A comment in the scanned file: `# kics-scan ignore-line` or `# kics-scan ignore-block` | Write the fields in the comment lines above. |
+| Gixy-Next | The `--skips` flag in the Gixy-Next step of `security.yml` | Name the check. Write the fields in the comment lines above the step. |
+| zizmor | `.github/zizmor.yml`, key `rules.<rule>.ignore` | zizmor reads the file by itself. Write the fields in YAML comments. |
+| CodeQL | A dismissal of the alert in the Security tab | Write the fields in the comment of the dismissal. The CodeQL gate (S8) sees the dismissal. |
+
+Example of a Trivy entry:
+
+```text
+# Finding: CVE-2026-12345, target S2 runtime image.
+# Reason: No fix is available upstream. The vulnerable function is not used.
+# Owner: @batkomahno2008
+CVE-2026-12345 exp:2026-12-31
+```
+
 ## 6. Reporting
 
 - Upload the results of each scan as SARIF to the GitHub Security tab (code scanning).
 - Give each scan its own SARIF category. Then the results of one target do not replace the results of a different target.
+  The categories are `trivy-npm`, `trivy-dockerfile`, `trivy-kubernetes`, `kics-compose`, `gitleaks`, `zizmor`,
+  `trivy-image-runtime`, `trivy-image-proxy`, `trivy-image-e2e`, `gixy-nginx`, and the two CodeQL categories `/language:javascript-typescript` and `/language:actions`.
 - Upload the results also in `report` mode and also when the scan fails.
-- Some targets make no SARIF (for example S10 and S11). Write the result of each of their checks in the job summary.
+- Write a summary table in the job summary: the count of results for each tool and severity, and the gate result of each scan.
+- The workflow also keeps the SARIF files as the artifacts `security-sarif-*` for 7 days.
 - Keep the SBOM of each published image as an attestation in the registry (section 8.3).
 
 ## 7. Run-time baseline
@@ -168,11 +240,12 @@ If a container cannot obey a rule, add an exception with the reason (section 5).
 - Make an SBOM (SPDX or CycloneDX) for each published image and each published tag.
 - Make a provenance attestation for each published image.
 - Attach both to the image in the registry.
-- The S11 check fails when a published image has no SBOM or no provenance attestation.
+- The `publish` job does this with BuildKit (`sbom: true`, `provenance: mode=max`) and with `actions/attest-build-provenance`. No scan checks the result (see 2.2).
 
 ## 9. Edge controls (NGINX)
 
-NGINX owns these controls (D12). The S6 scan examines the config. The S10 scan examines the responses of the running stack.
+NGINX owns these controls (D12). The S6 scan examines the rendered config with Gixy-Next. It does not compare the values in this section.
+No scan examines the responses of a running stack (see 2.2). A reviewer checks the values in each pull request that changes `deploy/nginx/`.
 
 ### 9.1 Security headers
 
@@ -190,7 +263,7 @@ Each response from NGINX must have these headers, also error responses (use `alw
 
 The responses must not have the `X-Powered-By` header. NGINX must remove it from the app responses.
 
-NGINX sends `Strict-Transport-Security` on each response, also on plain HTTP. Browsers ignore this header over HTTP, so it causes no problem. Thus #16 owns HSTS in Compose and in Kubernetes. In Kubernetes, the cluster edge must not remove the header. The deployment guide (#12) must tell this.
+NGINX sends `Strict-Transport-Security` on each response, also on plain HTTP. Browsers ignore this header over HTTP, so it causes no problem. So #16 owns HSTS in Compose and in Kubernetes. In Kubernetes, the cluster edge must not remove the header. The deployment guide (#12) must tell this.
 
 ### 9.2 Content Security Policy
 
@@ -211,7 +284,7 @@ The CSP must have these directives as a minimum. `STATION_ORIGINS` is the NGINX 
 | `form-action` | `'self'` |
 | `frame-ancestors` | `'none'` |
 
-The check fails when one of these conditions occurs:
+The CSP is not acceptable when one of these conditions occurs. Only the third condition has an automatic check.
 
 - `script-src` (or `default-src` when `script-src` is missing) has `'unsafe-inline'`, `'unsafe-eval'`, `data:`, `blob:`, `*` or `http:`.
 - A directive in the table is missing.
@@ -231,12 +304,12 @@ Use the client IP as the key. Set the real client IP from `X-Forwarded-For` only
 
 Keep the values in one place in the NGINX config template. Do not add an NGINX environment variable for them. A new variable changes the shared contracts (epic rule 10).
 
-The S10 check sends more requests than the limit and expects at least one `429`. Run this check after the E2E suite is complete. Then a `429` cannot fail an E2E scenario through the clean-console rule.
+No scan checks these limits (see 2.2). The limits must not cause a `429` in the E2E suite, because the clean-console rule then fails a scenario.
 
 ### 9.4 Body size
 
 - The maximum request body is 16 KiB. A larger body gets `413`.
-- The S10 check sends a body of 32 KiB to `POST /api/ratings` and expects `413`.
+- No scan checks this limit (see 2.2).
 
 ### 9.5 TLS
 
@@ -248,22 +321,26 @@ These rules apply where NGINX stops TLS (Compose, D14).
 - Certificate tools usually write the private key with owner `root` and mode `0600`. The unprivileged NGINX user cannot read such a file. The deployment guide (#12) must tell the operator to give the key file to the NGINX user or group.
 - Send HTTP on port 8080 to HTTPS with a `301` redirect, except `/healthz`.
 
+No scan checks these rules (see 2.2). A reviewer checks `deploy/nginx/tls/tls.conf` in each pull request that changes it.
+
 In Kubernetes, the cluster edge stops TLS (D11). The operator must apply the same TLS minimum at the edge. The deployment guide (#12) must tell this.
 
 ### 9.6 Version disclosure
 
 - The `Server` header must not show a version. Use `server_tokens off`.
 - Error pages must not show a version.
+- Gixy-Next checks `server_tokens` (the check `version_disclosure`) in the S6 scan.
 
 ## 10. Schedule
 
 | Event | Targets | Gate |
 |---|---|---|
-| Each pull request into `main` | S1 to S11 | Mode of section 4. |
-| Each push to `main` | S1 to S11 | Mode of section 4. |
-| Each night | S1, S2, S7 and S11 against the latest published images (`main` and `latest` tags) | Report only. A new gate violation opens an issue with the label `security`. The issue holds only the finding ID, the target and the severity. |
+| Each pull request into `main` | S1 to S9. The image scans use the images from the build artifact. | Mode of section 4. |
+| Each push to `main` | S1 to S9. The image scans use the images from the build artifact. | Mode of section 4. |
+| Each night | S1 to S9. The image scans (S2, S6 and S7) use the published images with tag `main`. The `e2e` image is not part of the night scan. | Report only. The results go to the Security tab. |
 
 New vulnerabilities appear after a release, so the night scan must use the published images and not a new build.
+The workflow does not open an issue for a new finding, because that needs custom code. The Security Specialist reads the Security tab.
 
 ## 11. Decisions for the user
 
