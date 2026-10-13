@@ -19,8 +19,8 @@ The file `deploy/nginx/README.md` has more detail on the files. Other guides:
 - In Compose with TLS, it stops TLS and sends HTTP to HTTPS. In Kubernetes, the cluster edge
   stops TLS and NGINX uses plain HTTP.
 
-The image is `ghcr.io/batkomahno2008/radio-learning-proxy`. It is built from
-`nginxinc/nginx-unprivileged`. NGINX runs as UID 101 and listens on port 8080 (HTTP) and
+The image is `ghcr.io/batkomahno2008/radio-learning-proxy`. It uses
+`nginxinc/nginx-unprivileged` as its base. NGINX runs as UID 101 and listens on port 8080 (HTTP) and
 port 8443 (HTTPS, only with `tls/tls.conf`). It writes only to `/tmp`, so the root file
 system can be read-only.
 
@@ -104,9 +104,10 @@ for the HTTP server.
 A reload (`nginx -s reload`) reads the files again, but it does not render the template again.
 So:
 
-- After a change of a **variable**, restart the container (Compose: `docker compose up -d`,
-  Kubernetes: change the value in the overlay and run `kubectl apply -k`. Kustomize makes a new ConfigMap
-  with a new name, and the pods restart).
+- After a change of a **variable**, restart the container.
+  - Compose: run `docker compose up -d`.
+  - Kubernetes: change the value in the overlay. Run `kubectl apply -k`.
+    Kustomize makes a new ConfigMap with a new name, and the pods restart.
 - After a change of a **template**, build a new image and deploy it.
 - After a change of a **certificate**, run a reload.
 

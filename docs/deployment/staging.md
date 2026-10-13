@@ -12,7 +12,7 @@ Other guides:
 - There are two kinds: one with Docker Compose and one with a kind cluster (Kubernetes in Docker).
 - Each one runs NGINX, the app and Postgres from the images that you built for the run.
 - Each one uses a test station (`https://station.test`). The E2E suite serves it in the browser.
-  No real stream is needed.
+  The suite needs no real stream.
 - Each one uses plain HTTP and no certificate.
 - You remove each one, with its data, after the test run.
 

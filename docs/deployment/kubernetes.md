@@ -35,8 +35,8 @@ rule lets only the app and the backup job reach Postgres.
 
 ## 1. Prerequisites
 
-- Kubernetes 1.30 or later. The manifests use the `sleep` action of `preStop`. The files are
-  checked with kubeconform for Kubernetes 1.37.0.
+- Kubernetes 1.30 or later. The manifests use the `sleep` action of `preStop`. We checked the files
+  with kubeconform for Kubernetes 1.37.0.
 - `kubectl` that matches your cluster.
 - Kustomize (`kustomize` 5 or later). `kubectl kustomize` and `kubectl apply -k` also work,
   but `kustomize edit set image` needs the `kustomize` tool.
@@ -127,7 +127,7 @@ The `Gateway` must:
 
 - Stop TLS and keep the `Strict-Transport-Security` header that NGINX sends.
 - Accept routes from the namespace `radio-learning`. Set `allowedRoutes` on the listener, for
-  example `namespaces.from: All`. Without it, the `HTTPRoute` is not accepted.
+  example `namespaces.from: All`. Without it, the Gateway does not accept the `HTTPRoute`.
 - Send plain HTTP requests to HTTPS. NGINX sends no redirect in this setup.
 
 ### 3.3 `REAL_IP_FROM`
@@ -575,10 +575,10 @@ into a new empty cluster also works.
    echo "$PASSWORD"
    ```
 
-2. Change the password in Postgres. Replace `<new password>` with the value from step 1.
+2. Change the password in Postgres. Use the same shell, because the command reads `$PASSWORD` from step 1.
 
    ```bash
-   kubectl --namespace radio-learning exec statefulset/postgres -- psql -U radio -d radio -c "ALTER ROLE radio PASSWORD '<new password>'"
+   kubectl --namespace radio-learning exec statefulset/postgres -- psql -U radio -d radio -c "ALTER ROLE radio PASSWORD '$PASSWORD'"
    ```
 
 3. Restart the app:
@@ -597,10 +597,10 @@ into a new empty cluster also works.
 | A pod stays `Pending`. | No StorageClass, or no resources on the nodes. | Run `kubectl --namespace radio-learning describe pod <name>`. Set a default StorageClass. |
 | A pod is in `ImagePullBackOff`. | The tag does not exist, or the node cannot reach the registry. | Check the tag (section 3.1). Check the network of the node. |
 | The pods use old code after an upgrade. | You use the tag `main` and the node keeps an old image. | Use a version tag or a digest. |
-| The site answers `404` or `503` from the edge, not from NGINX. | The `HTTPRoute` or the `Ingress` is not accepted. | Run `kubectl --namespace radio-learning describe httproute radio-learning`. Fix `parentRefs` and `allowedRoutes`. |
+| The site answers `404` or `503` from the edge, not from NGINX. | The edge does not accept the `HTTPRoute` or the `Ingress`. | Run `kubectl --namespace radio-learning describe httproute radio-learning`. Fix `parentRefs` and `allowedRoutes`. |
 | The site answers `502` or `504` from NGINX. | The app pods are not ready. | Run `kubectl --namespace radio-learning get pods` and `logs deployment/radio-learning`. |
 | `/api/ready` answers `503`. | The app cannot reach Postgres. | Run `kubectl --namespace radio-learning logs statefulset/postgres`. Check the Secret and the NetworkPolicy. |
-| The app logs `password authentication failed`. | The Secret was changed after Postgres made its database. | Run `ALTER ROLE` with the password of the Secret ("Change the password" in section 9). |
+| The app logs `password authentication failed`. | Someone changed the Secret after Postgres made its database. | Run `ALTER ROLE` with the password of the Secret ("Change the password" in section 9). |
 | Many answers are `429`, also for different clients. | `REAL_IP_FROM` is wrong, so NGINX counts all clients as the edge address. | Set the pod range of the edge (section 3.3). |
 | The page loads but the player is silent. The console shows CSP errors. | The stream origin is not in `STATION_ORIGINS`. | Add the origin (section 3.4). Apply again. |
 | Every pod can reach Postgres. | The network plugin does not enforce NetworkPolicy. | Install a plugin that enforces it, for example Calico. |

@@ -219,7 +219,7 @@ reads the files only at start and at reload, so a renewal needs a reload.
 
 `nginx -s reload` starts new workers with the new files. It does not drop open connections.
 The script copies into a directory, not into single mounted files. A directory mount shows
-the new files at once.
+the new files without delay.
 
 ## 5. Logs
 
@@ -298,19 +298,20 @@ environment, so they need no password.
    ```sh
    #!/bin/sh
    set -eu
+   umask 077
    # Cron starts with another working directory. Compose reads .env here.
    cd /opt/radio-learning
    DIR=/var/backups/radio-learning
    mkdir -p "$DIR"
    FILE="$DIR/radio-$(date +%Y%m%d-%H%M%S).sql"
    docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner' > "$FILE" || { rm -f "$FILE"; exit 1; }
-   test -s "$FILE"
+   test -s "$FILE" || { rm -f "$FILE"; exit 1; }
    find "$DIR" -name 'radio-*.sql' -mtime +14 -delete
    echo "$FILE"
    ```
 
 2. Make it executable: `sudo chmod 0755 /usr/local/bin/radio-learning-backup.sh`.
-3. Run it by hand and read the output: `sudo /usr/local/bin/radio-learning-backup.sh`.
+3. Run it by hand: `sudo /usr/local/bin/radio-learning-backup.sh`. Read the output.
 4. Add one line to the crontab of root (`sudo crontab -e`). It runs the script each day at 03:17.
 
    ```text
