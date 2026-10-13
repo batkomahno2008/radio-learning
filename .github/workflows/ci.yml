@@ -341,7 +341,10 @@ jobs:
       - name: NetworkPolicy test (kind)
         if: ${{ !cancelled() && matrix.target == 'kind' && steps.ready.outcome == 'success' }}
         shell: bash
-        run: deploy/k8s/kind/netpol-test.sh
+        env:
+          # The pinned kubectl of the staging-kind action.
+          KIND_BIN_DIR: ${{ steps.deploy_kind.outputs.bin-dir }}
+        run: PATH="$KIND_BIN_DIR:$PATH" deploy/k8s/kind/netpol-test.sh
 
       - name: Collect the logs (Docker Compose)
         if: ${{ (failure() || steps.e2e_live.outcome == 'failure') && matrix.target == 'compose' }}
