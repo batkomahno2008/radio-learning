@@ -1,0 +1,133 @@
+# Writes the summary table of a security job (epic #1, issue #11).
+#
+# This action is not a scanner. It reads the SARIF files that the scan tools wrote,
+# counts the results for each severity, and prints one table. It also prints the
+# gate result of each scan step. In "enforce" mode it fails the job when a CodeQL
+# result is CRITICAL or HIGH, because CodeQL has no exit code for findings.
+#
+# Severity of a result: the "security-severity" score of its rule when the tool gives
+# one (9.0 or more CRITICAL, 7.0 or more HIGH, 4.0 or more MEDIUM, else LOW). Without
+# a score, the SARIF level gives the severity (error HIGH, warning MEDIUM, else LOW).
+name: Security summary
+description: Write a table of the SARIF result counts and the gate results to the job summary.
+
+inputs:
+  title:
+    description: Heading of the table.
+    required: true
+  sarif-dir:
+    description: Directory with the SARIF files. The action reads it recursively.
+    required: true
+  gates:
+    description: >
+      One line for each scan step, in the form "name=outcome". The outcome is the
+      value of steps.<id>.outcome.
+    required: false
+    default: ""
+  mode:
+    description: "report or enforce."
+    required: true
+  fail-on-high:
+    description: >
+      Glob, relative to sarif-dir, of the SARIF files in which a CRITICAL or HIGH result
+      fails the job in enforce mode. Empty: no such rule.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Write the summary
+      shell: bash
+      env:
+        TITLE: ${{ inputs.title }}
+        SARIF_DIR: ${{ inputs.sarif-dir }}
+        GATES: ${{ inputs.gates }}
+        MODE: ${{ inputs.mode }}
+        FAIL_ON_HIGH: ${{ inputs.fail-on-high }}
+      run: |
+        set -euo pipefail
+        shopt -s globstar nullglob
+
+        case "$MODE" in
+          report|enforce) ;;
+          *) echo "::error::The input mode must be report or enforce. The value is '$MODE'."; exit 1 ;;
+        esac
+
+        # One line for each run in a SARIF file: tool, CRITICAL, HIGH, MEDIUM, LOW.
+        # shellcheck disable=SC2016
+        counts='
+          def band($rule; $result):
+            ($rule.properties["security-severity"] // null) as $score
+            | if $score != null then
+                ($score | tonumber) as $n
+                | if $n >= 9 then "CRITICAL" elif $n >= 7 then "HIGH" elif $n >= 4 then "MEDIUM" else "LOW" end
+              else
+                ($result.level // $rule.defaultConfiguration.level // "warning") as $level
+                | if $level == "error" then "HIGH" elif $level == "warning" then "MEDIUM" else "LOW" end
+              end;
+          .runs[]
+          | ([(.tool.driver.rules // [])[], ((.tool.extensions // [])[] | (.rules // [])[])]
+              | map({key: .id, value: .}) | from_entries) as $rules
+          | [(.results // [])[] | band($rules[.ruleId] // {}; .)] as $bands
+          | [.tool.driver.name]
+            + (["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+                | map(. as $n | $bands | map(select(. == $n)) | length))
+          | @tsv'
+
+        out="$(mktemp)"
+        {
+          echo "### ${TITLE}"
+          echo
+          echo "Mode: \`${MODE}\`. Severity: the score of the rule, or the SARIF level when the tool gives no score."
+          echo
+          echo "| Scan | Tool | CRITICAL | HIGH | MEDIUM | LOW | Total |"
+          echo "|---|---|---:|---:|---:|---:|---:|"
+          found=0
+          for file in "$SARIF_DIR"/**/*.sarif; do
+            found=1
+            name="${file#"$SARIF_DIR"/}"
+            name="${name%.sarif}"
+            while IFS=$'\t' read -r tool crit high med low; do
+              echo "| ${name} | ${tool} | ${crit} | ${high} | ${med} | ${low} | $((crit + high + med + low)) |"
+            done < <(jq -r "$counts" "$file")
+          done
+          if [ "$found" = 0 ]; then
+            echo "| (no SARIF file) | | | | | | |"
+          fi
+          echo
+          if [ -n "$GATES" ]; then
+            echo "| Gate | Result |"
+            echo "|---|---|"
+            while IFS='=' read -r label outcome; do
+              [ -n "$label" ] || continue
+              case "$outcome" in
+                success) result="pass" ;;
+                skipped) result="skipped" ;;
+                *) result="FAIL (${outcome})" ;;
+              esac
+              echo "| ${label} | ${result} |"
+            done <<< "$GATES"
+            echo
+            if [ "$MODE" = report ]; then
+              echo "The mode is \`report\`: a failed gate does not stop the job. It would stop it in \`enforce\` mode."
+            fi
+          fi
+        } > "$out"
+
+        cat "$out"
+        cat "$out" >> "$GITHUB_STEP_SUMMARY"
+
+        if [ -n "$FAIL_ON_HIGH" ]; then
+          total=0
+          for file in "$SARIF_DIR"/$FAIL_ON_HIGH; do
+            while IFS=$'\t' read -r _ crit high _ _; do
+              total=$((total + crit + high))
+            done < <(jq -r "$counts" "$file")
+          done
+          echo "CRITICAL and HIGH results in '${FAIL_ON_HIGH}': ${total}"
+          if [ "$MODE" = enforce ] && [ "$total" -gt 0 ]; then
+            echo "::error::The gate fails: ${total} CRITICAL or HIGH result(s) in '${FAIL_ON_HIGH}'."
+            exit 1
+          fi
+        fi

@@ -1,7 +1,8 @@
 # CI pipeline (epic #1, issue #10).
 #
-#   build ──────┐
-#   manifests ──┼─> staging-e2e (compose, kind) ──> publish (push to main and v*.*.* tags only)
+#   build ──────┬─> staging-e2e (compose, kind) ──┐
+#   manifests ──┘                                 ├─> publish (push to main and v*.*.* tags only)
+#   build ──────────> security ───────────────────┘
 #
 # - build: API tests (Dockerfile target "test"), the runtime and proxy images, the
 #   image checks of #8, and the e2e target for the build cache.
@@ -10,6 +11,8 @@
 # - staging-e2e: a temporary staging on Docker Compose and on kind (decision D1).
 #   A deploy step deploys. Then the E2E image runs in its own container through
 #   NGINX (rule 2.1). @live does not block the pipeline (decision D10).
+# - security: the scans of .github/workflows/security.yml (issue #11). They scan the
+#   images that "build" saved, and the repository. The mode is "report" for now.
 # - publish: pushes the two images to GHCR with an SBOM and provenance. The E2E
 #   image is never published.
 #
@@ -381,10 +384,27 @@ jobs:
         with:
           command: down
 
+  # The scans of issue #11. The job calls the reusable workflow, which scans the
+  # images from the "ci-images" artifact of the "build" job. This is the only job
+  # with "security-events: write", because it uploads the SARIF files.
+  # Issue #13 changes the mode to "enforce".
+  security:
+    name: Security scans
+    needs: [build]
+    permissions:
+      contents: read
+      actions: read
+      # The night scan pulls the published images. security.yml asks for this
+      # permission, so this job must grant it.
+      packages: read
+      security-events: write
+    uses: ./.github/workflows/security.yml
+    with:
+      mode: report
+
   publish:
     name: Publish to GHCR
-    # #11 adds the security job to this list.
-    needs: [build, manifests, staging-e2e]
+    needs: [build, manifests, staging-e2e, security]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
