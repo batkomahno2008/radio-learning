@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const util = require('node:util');
 const { DataType, newDb } = require('pg-mem');
 const request = require('supertest');
 const { createApp } = require('../../app');
@@ -70,11 +71,12 @@ async function createTestApp({ serveStatic = false, streamsText, trustProxy } = 
 }
 
 // Replaces console.error while fn runs, so a test can read what the app logs and the
-// test output stays clean. Returns the logged lines (each argument list joined).
+// test output stays clean. Returns the logged lines. Each line is util.format() of
+// the arguments, which is what console.error writes (format specifiers included).
 async function captureErrors(fn) {
   const lines = [];
   const original = console.error;
-  console.error = (...args) => lines.push(args.map(String).join(' '));
+  console.error = (...args) => lines.push(util.format(...args));
   try {
     await fn();
   } finally {
