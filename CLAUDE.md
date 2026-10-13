@@ -357,7 +357,7 @@ by hand (`workflow_dispatch`). A new push to a PR cancels the old run of that PR
   only on a release tag (no pre-release part). It builds from the cache of `build`, with
   `provenance: mode=max` and `sbom: true`. It also makes a GitHub artifact attestation
   (`gh attestation verify`). The E2E image is never published.
-- The workflow never changes a manifest. The deploy step of a release sets the prod image
+- The workflow never changes a manifest. At release time, the operator sets the prod image
   tag with `kustomize edit set image`.
 - `permissions: contents: read` for the workflow. Only `publish` has `packages: write`,
   `id-token: write` and `attestations: write`. Each action is pinned to a full commit SHA,

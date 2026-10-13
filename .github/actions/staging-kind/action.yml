@@ -114,6 +114,8 @@ runs:
       env:
         LOG_DIR: ${{ inputs.log-dir }}
       run: |
+        # A failed log command must not fail the job (for example when only @live failed).
+        set +e
         set -uo pipefail
         mkdir -p "$LOG_DIR"
         ns=(--namespace radio-learning)
@@ -133,8 +135,12 @@ runs:
       env:
         CLUSTER: ${{ inputs.cluster-name }}
       run: |
+        # A failed cleanup gives a warning. It does not fail the job.
+        set +e
         if command -v kind > /dev/null; then
-          kind delete cluster --name "$CLUSTER"
+          if ! kind delete cluster --name "$CLUSTER"; then
+            echo "::warning::kind delete cluster failed."
+          fi
         else
           echo "kind is not installed. No cluster to delete."
         fi

@@ -28,12 +28,16 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Cancel old runs on a PR. Runs on main and on tags always finish, so each one publishes.
+  # On a PR, a new run cancels the old run. On main and on tags, a running run is not
+  # cancelled. But a group has one running run and one waiting run at most. A newer run
+  # cancels the waiting run. That commit then gets no sha-<short> image. The newer run
+  # publishes main (or its version tags) for the newer commit.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  APP_IMAGE: ghcr.io/batkomahno2008/radio-learning
-  PROXY_IMAGE: ghcr.io/batkomahno2008/radio-learning-proxy
+  # Not APP_IMAGE and PROXY_IMAGE: Compose reads those names (compose.staging.yaml).
+  GHCR_APP: ghcr.io/batkomahno2008/radio-learning
+  GHCR_PROXY: ghcr.io/batkomahno2008/radio-learning-proxy
   # docker/build-push-action: keep the build summary, but upload no build record
   # artifact for each build. The run then shows only the artifacts of this workflow.
   DOCKER_BUILD_RECORD_UPLOAD: "false"
@@ -301,7 +305,7 @@ jobs:
           for path in healthz api/ready; do
             code=000
             for _ in $(seq 1 60); do
-              code="$(curl -s -o /dev/null -w '%{http_code}' "${HOST_URL}${path}" || true)"
+              code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "${HOST_URL}${path}" || true)"
               if [ "$code" = "200" ]; then break; fi
               sleep 2
             done
@@ -420,7 +424,7 @@ jobs:
         id: meta_app
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ${{ env.APP_IMAGE }}
+          images: ${{ env.GHCR_APP }}
           flavor: latest=false
           tags: |
             type=sha,prefix=sha-,format=short
@@ -434,7 +438,7 @@ jobs:
         id: meta_proxy
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ${{ env.PROXY_IMAGE }}
+          images: ${{ env.GHCR_PROXY }}
           flavor: latest=false
           tags: |
             type=sha,prefix=sha-,format=short
@@ -481,14 +485,14 @@ jobs:
       - name: Attest the app image
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ${{ env.APP_IMAGE }}
+          subject-name: ${{ env.GHCR_APP }}
           subject-digest: ${{ steps.push_app.outputs.digest }}
           push-to-registry: true
 
       - name: Attest the proxy image
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ${{ env.PROXY_IMAGE }}
+          subject-name: ${{ env.GHCR_PROXY }}
           subject-digest: ${{ steps.push_proxy.outputs.digest }}
           push-to-registry: true
 
@@ -503,13 +507,13 @@ jobs:
           {
             echo "### Published images"
             echo
-            echo "App: \`${APP_IMAGE}@${APP_DIGEST}\`"
+            echo "App: \`${GHCR_APP}@${APP_DIGEST}\`"
             echo
             echo '```'
             echo "$APP_TAGS"
             echo '```'
             echo
-            echo "Proxy: \`${PROXY_IMAGE}@${PROXY_DIGEST}\`"
+            echo "Proxy: \`${GHCR_PROXY}@${PROXY_DIGEST}\`"
             echo
             echo '```'
             echo "$PROXY_TAGS"

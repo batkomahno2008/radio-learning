@@ -103,6 +103,8 @@ runs:
         POSTGRES_PASSWORD: not-used-by-logs
         LOG_DIR: ${{ inputs.log-dir }}
       run: |
+        # A failed log command must not fail the job (for example when only @live failed).
+        set +e
         set -uo pipefail
         mkdir -p "$LOG_DIR"
         compose=(docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml)
@@ -122,5 +124,9 @@ runs:
         PROXY_IMAGE: ${{ inputs.proxy-image }}
         POSTGRES_PASSWORD: not-used-by-down
       run: |
-        docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml \
-          down -v --remove-orphans --timeout 20
+        # A failed cleanup gives a warning. It does not fail the job.
+        set +e
+        if ! docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml \
+          down -v --remove-orphans --timeout 20; then
+          echo "::warning::docker compose down failed."
+        fi
