@@ -2,3 +2,6 @@ node_modules/
 reports/
 .idea/
 .env
+
+# Kubernetes staging secret made by deploy/k8s/kind/db-env.sh
+deploy/k8s/**/db.env

@@ -1,0 +1,29 @@
+# The Ingress controller stops TLS. NGINX and the app use plain HTTP in the cluster.
+# Change the values that start with "replace-with". Add no controller annotations here.
+# If your controller needs annotations, add them in your own overlay.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: radio-learning
+  labels:
+    app.kubernetes.io/name: radio-learning
+    app.kubernetes.io/component: edge
+    app.kubernetes.io/part-of: radio-learning
+spec:
+  ingressClassName: replace-with-ingress-class
+  tls:
+    - hosts:
+        - radio.example.com
+      # A TLS Secret in this namespace. Make it with your certificate tool.
+      secretName: radio-learning-tls
+  rules:
+    - host: radio.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: radio-learning-proxy
+                port:
+                  number: 80

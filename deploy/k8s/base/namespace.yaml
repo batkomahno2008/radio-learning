@@ -1,0 +1,10 @@
+# The "restricted" Pod Security level makes the cluster refuse a pod that breaks
+# the run-time rules R1 to R5 of docs/security/policy.md.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: radio-learning
+  labels:
+    app.kubernetes.io/part-of: radio-learning
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

@@ -1,0 +1,17 @@
+# Only NGINX uses this Service. The NetworkPolicy blocks all other pods.
+apiVersion: v1
+kind: Service
+metadata:
+  name: radio-learning
+  labels:
+    app.kubernetes.io/name: radio-learning
+    app.kubernetes.io/component: app
+    app.kubernetes.io/part-of: radio-learning
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: radio-learning
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

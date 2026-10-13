@@ -1,0 +1,52 @@
+# Production. See deploy/k8s/README.md for the steps before the first apply.
+#
+# Change these values for your cluster before you apply the overlay:
+#   1. httproute.yaml: the Gateway (parentRefs) and the host name.
+#   2. REAL_IP_FROM below: the address range of the Gateway or controller pods.
+#   3. The image tags (kustomize edit set image, see the README). Use a version tag
+#      or a digest, not "main".
+#   4. The Secret "radio-learning-db": make it with "kubectl create secret".
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: radio-learning
+
+resources:
+  - ../../base
+  - httproute.yaml
+
+replicas:
+  - name: radio-learning-proxy
+    count: 2
+  - name: radio-learning
+    count: 2
+
+configMapGenerator:
+  - name: radio-learning-proxy-env
+    behavior: merge
+    literals:
+      # NGINX reads the client IP from X-Forwarded-For, but only for requests from
+      # this range. The value below is not valid on purpose: NGINX does not start
+      # until you set the range of your Gateway or Ingress controller pods,
+      # for example 10.244.0.0/16.
+      - REAL_IP_FROM=REPLACE_WITH_EDGE_ADDRESS_RANGE
+
+# The images are the two published images. The deploy step sets the tags:
+#   kustomize edit set image ghcr.io/batkomahno2008/radio-learning=ghcr.io/batkomahno2008/radio-learning:1.0.0
+# The base keeps the tag "main".
+
+patches:
+  - target:
+      kind: StatefulSet
+      name: postgres
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 10Gi
+  - target:
+      kind: PersistentVolumeClaim
+      name: radio-learning-backup
+    patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 10Gi

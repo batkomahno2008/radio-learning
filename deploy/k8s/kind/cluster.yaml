@@ -1,0 +1,25 @@
+# kind cluster for the staging overlay (epic #1, D1).
+#
+#   kind create cluster --name radio-learning --config deploy/k8s/kind/cluster.yaml
+#   deploy/k8s/kind/install-calico.sh
+#
+# The default network plugin of kind does not enforce NetworkPolicy, so this file turns
+# it off. install-calico.sh installs Calico, which enforces NetworkPolicy. The nodes stay
+# NotReady until Calico runs.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: radio-learning
+networking:
+  disableDefaultCNI: true
+  # The default pool of the Calico manifest.
+  podSubnet: 192.168.0.0/16
+nodes:
+  - role: control-plane
+    # Kubernetes 1.37.0, pinned by digest.
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    extraPortMappings:
+      # The node port 30080 is the NGINX Service of the staging overlay.
+      - containerPort: 30080
+        hostPort: 8080
+        listenAddress: 127.0.0.1
+        protocol: TCP

@@ -1,0 +1,3 @@
+# The fake station of the E2E suite (tests/support/station.js). Keep this file the
+# same as tests/fixtures/streams.txt.
+https://station.test/hls/live.m3u8

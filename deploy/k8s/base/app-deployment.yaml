@@ -1,0 +1,125 @@
+# The Node app. It is stateless: Postgres keeps all state.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: radio-learning
+  labels:
+    app.kubernetes.io/name: radio-learning
+    app.kubernetes.io/component: app
+    app.kubernetes.io/part-of: radio-learning
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: radio-learning
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: radio-learning
+        app.kubernetes.io/component: app
+        app.kubernetes.io/part-of: radio-learning
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # After SIGTERM, the app needs 10 s at most to finish open requests.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: radio-learning
+      containers:
+        - name: app
+          # The kustomization sets the tag.
+          image: ghcr.io/batkomahno2008/radio-learning
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "3000"
+            # NGINX serves the static files.
+            - name: SERVE_STATIC
+              value: "false"
+            # One proxy hop: NGINX.
+            - name: TRUST_PROXY
+              value: "1"
+            - name: STREAMS_FILE
+              value: /config/streams.txt
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: radio-learning-db
+                  key: DATABASE_URL
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          # The app listens after the database wait and the migration (30 s at most).
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          # Liveness does not call the database.
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Readiness calls the database. It answers 503 when the database is down.
+          readinessProbe:
+            httpGet:
+              path: /api/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            # Wait until the Service stops to send new requests to this pod.
+            preStop:
+              sleep:
+                seconds: 5
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: streams
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: streams
+          configMap:
+            name: radio-learning-streams
+            items:
+              - key: streams.txt
+                path: streams.txt

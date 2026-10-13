@@ -1,0 +1,17 @@
+# The only Service that users reach. The cluster edge sends traffic here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: radio-learning-proxy
+  labels:
+    app.kubernetes.io/name: radio-learning-proxy
+    app.kubernetes.io/component: proxy
+    app.kubernetes.io/part-of: radio-learning
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: radio-learning-proxy
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
