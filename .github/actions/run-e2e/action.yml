@@ -1,0 +1,62 @@
+# Run the E2E image against a deployed app (epic #1, rule 2.1). Issue #10.
+#
+# This action runs tests only. It does not deploy and does not change the app.
+# The E2E container reaches NGINX at base-url. On plain HTTP, base-url must be a
+# loopback origin (localhost or 127.0.0.1), else the clean-console rule fails
+# each scenario (decision on PR #24).
+name: Run the E2E tests
+description: Run the Cucumber suite of the E2E image against the NGINX entry point.
+
+inputs:
+  base-url:
+    description: "BASE_URL: the NGINX address, as the E2E container sees it."
+    required: true
+  network:
+    description: "The Docker network of the E2E container, for example host or container:<proxy>."
+    required: true
+  tags:
+    description: "An optional Cucumber tag expression. The profile tags also apply."
+    required: false
+    default: ""
+  profile:
+    description: "The cucumber.js profile: default (no @live) or live."
+    required: false
+    default: "default"
+  image:
+    description: "The E2E image."
+    required: false
+    default: "radio-learning-e2e:ci"
+  report-dir:
+    description: "The directory for reports/cucumber.html."
+    required: false
+    default: "reports/e2e"
+
+runs:
+  using: composite
+  steps:
+    - name: Run the suite
+      shell: bash
+      env:
+        BASE_URL: ${{ inputs.base-url }}
+        NETWORK: ${{ inputs.network }}
+        TAGS: ${{ inputs.tags }}
+        PROFILE: ${{ inputs.profile }}
+        IMAGE: ${{ inputs.image }}
+        REPORT_DIR: ${{ inputs.report-dir }}
+      run: |
+        set -euo pipefail
+        # The suite runs as pwuser in the container. It must write the report.
+        mkdir -p "$REPORT_DIR"
+        chmod 0777 "$REPORT_DIR"
+        report="$(cd "$REPORT_DIR" && pwd)"
+        args=(--profile "$PROFILE")
+        if [ -n "$TAGS" ]; then
+          args+=(--tags "$TAGS")
+        fi
+        echo "BASE_URL=$BASE_URL network=$NETWORK profile=$PROFILE tags=${TAGS:-none}"
+        docker run --rm \
+          --network "$NETWORK" \
+          --shm-size=1g \
+          -e BASE_URL="$BASE_URL" \
+          -v "$report:/e2e/reports" \
+          "$IMAGE" "${args[@]}"

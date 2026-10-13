@@ -1,0 +1,132 @@
+# Temporary staging on Docker Compose (epic #1, decision D1). Issue #10.
+#
+# This action deploys, collects logs and removes the stack. It runs no test.
+# The images must be in the local Docker store (docker load) before "up".
+#
+#   command: up    starts the stack and waits until all services are healthy
+#   command: logs  writes the logs of all services to log-dir
+#   command: down  removes the stack and its data
+#
+# Each run gets a random Postgres password. The password stays in the shell of
+# the "up" step. "logs" and "down" do not need it, but Compose checks that the
+# variable has a value, so they give a placeholder.
+name: Staging on Docker Compose
+description: Deploy, read logs of, or remove the staging stack of compose.staging.yaml.
+
+inputs:
+  command:
+    description: "up, logs or down."
+    required: true
+  staging-id:
+    description: "STAGING_ID: the unique part of the Compose project name."
+    required: true
+  http-port:
+    description: "HTTP_PORT: the host port of NGINX. Do not use 8080 (kind uses it)."
+    required: false
+    default: "18080"
+  app-image:
+    description: "APP_IMAGE: the runtime image."
+    required: false
+    default: "radio-learning:ci"
+  proxy-image:
+    description: "PROXY_IMAGE: the proxy image."
+    required: false
+    default: "radio-learning-proxy:ci"
+  log-dir:
+    description: "The directory for the logs (command logs)."
+    required: false
+    default: "staging-logs"
+
+outputs:
+  network:
+    description: "The Docker network for the E2E container: the network of the proxy container."
+    value: ${{ steps.up.outputs.network }}
+  base-url:
+    description: "BASE_URL for the E2E container. It is a loopback origin (decision on PR #24)."
+    value: ${{ steps.up.outputs.base-url }}
+  host-url:
+    description: "The NGINX address on the runner."
+    value: ${{ steps.up.outputs.host-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the command
+      shell: bash
+      env:
+        COMMAND: ${{ inputs.command }}
+      run: |
+        case "$COMMAND" in
+          up|logs|down) ;;
+          *) echo "::error::Unknown command '$COMMAND'. Use up, logs or down."; exit 1 ;;
+        esac
+
+    - name: Start the stack
+      id: up
+      if: inputs.command == 'up'
+      shell: bash
+      env:
+        STAGING_ID: ${{ inputs.staging-id }}
+        HTTP_PORT: ${{ inputs.http-port }}
+        APP_IMAGE: ${{ inputs.app-image }}
+        PROXY_IMAGE: ${{ inputs.proxy-image }}
+      run: |
+        set -euo pipefail
+        docker compose version
+        POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+        echo "::add-mask::$POSTGRES_PASSWORD"
+        export POSTGRES_PASSWORD
+        compose=(docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml)
+        "${compose[@]}" up -d --wait --wait-timeout 180
+        "${compose[@]}" ps
+        proxy="$("${compose[@]}" ps -q proxy)"
+        if [ -z "$proxy" ]; then
+          echo "::error::The proxy container does not run."
+          exit 1
+        fi
+        # The E2E container shares the network of the proxy container, so NGINX is
+        # localhost:8080 for it.
+        {
+          echo "network=container:$proxy"
+          echo "base-url=http://localhost:8080/"
+          echo "host-url=http://127.0.0.1:${HTTP_PORT}/"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Write the logs
+      if: inputs.command == 'logs'
+      shell: bash
+      env:
+        STAGING_ID: ${{ inputs.staging-id }}
+        HTTP_PORT: ${{ inputs.http-port }}
+        APP_IMAGE: ${{ inputs.app-image }}
+        PROXY_IMAGE: ${{ inputs.proxy-image }}
+        POSTGRES_PASSWORD: not-used-by-logs
+        LOG_DIR: ${{ inputs.log-dir }}
+      run: |
+        # A failed log command must not fail the job (for example when only @live failed).
+        set +e
+        set -uo pipefail
+        mkdir -p "$LOG_DIR"
+        compose=(docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml)
+        "${compose[@]}" ps -a > "$LOG_DIR/compose-ps.txt" 2>&1
+        for service in proxy app db; do
+          "${compose[@]}" logs --no-color --timestamps "$service" > "$LOG_DIR/compose-$service.log" 2>&1
+        done
+        ls -l "$LOG_DIR"
+
+    - name: Remove the stack
+      if: inputs.command == 'down'
+      shell: bash
+      env:
+        STAGING_ID: ${{ inputs.staging-id }}
+        HTTP_PORT: ${{ inputs.http-port }}
+        APP_IMAGE: ${{ inputs.app-image }}
+        PROXY_IMAGE: ${{ inputs.proxy-image }}
+        POSTGRES_PASSWORD: not-used-by-down
+      run: |
+        # A failed cleanup gives a warning. It does not fail the job.
+        set +e
+        if ! docker compose -f compose.yaml -f deploy/compose/compose.staging.yaml \
+          down -v --remove-orphans --timeout 20; then
+          echo "::warning::docker compose down failed."
+        fi

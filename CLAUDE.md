@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+[![CI](https://github.com/batkomahno2008/radio-learning/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/batkomahno2008/radio-learning/actions/workflows/ci.yml)
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Writing standard
@@ -311,6 +313,7 @@ kubectl kustomize deploy/k8s/overlays/prod | kubeconform -strict -summary -kuber
   -schema-location default \
   -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
                                                         # the second schema location is for the HTTPRoute
+                                                        # CI pins its commit (CRDS_CATALOG_COMMIT in ci.yml)
 
 kind create cluster --config deploy/k8s/kind/cluster.yaml   # host port 8080 -> NGINX
 deploy/k8s/kind/install-calico.sh
@@ -321,6 +324,46 @@ BASE_URL=http://localhost:8080/ npm run test:e2e        # use localhost, not ano
 deploy/k8s/kind/netpol-test.sh                          # R8: who can reach app and Postgres
 kind delete cluster --name radio-learning
 ```
+
+## CI pipeline (`.github/`)
+
+`.github/workflows/ci.yml` runs on each PR, on each push to `main`, on tags `v*.*.*` and
+by hand (`workflow_dispatch`). A new push to a PR cancels the old run of that PR.
+
+| Job | Needs | What it does |
+|---|---|---|
+| `build` | – | Builds the `test` target (API tests), `runtime` as `radio-learning:ci` and `proxy` as `radio-learning-proxy:ci`, with the four label build arguments. Runs the image checks of #8 (no tests, no npm, no app code in `proxy`). Fills the build cache for `e2e`. Uploads the two images as the artifact `ci-images`. |
+| `manifests` | – | `kubeconform` on the staging and prod overlays (Kubernetes 1.37.0, CRDs-catalog pinned to a commit) and `docker compose config` on the three Compose files. |
+| `staging-e2e` | `build`, `manifests` | Matrix `target: [compose, kind]`. Loads the images, builds `e2e` from the cache, deploys, waits for `/healthz` and `/api/ready` through NGINX, runs the E2E image, then `@live` (does not block, D10). On kind, it also runs `netpol-test.sh`. It always removes the environment. |
+| `publish` | `build`, `manifests`, `staging-e2e` | Only on a push to `main` or a `v*.*.*` tag. Pushes both images to GHCR. |
+
+- A failed API test stops the run in `build`. Then no staging job and no `publish` job runs.
+- A deploy step only deploys, and an E2E step only runs tests (rule 2.1). The composite
+  actions keep them apart:
+  - `.github/actions/staging-compose` and `.github/actions/staging-kind`: input `command`
+    is `up`, `logs` or `down`. `up` makes a random Postgres password and gives the
+    outputs `network`, `base-url` and `host-url`.
+  - `.github/actions/run-e2e`: inputs `base-url`, `network`, `tags`, `profile`, `image`
+    and `report-dir`. It runs the E2E image with `--shm-size=1g`.
+- `BASE_URL` is always a loopback origin that reaches NGINX: Compose uses
+  `--network container:<proxy>` and `http://localhost:8080/`, kind uses `--network host`
+  and `http://localhost:8080/` (node port 30080). Compose staging publishes host port 18080,
+  not 8080.
+- The kind job loads only the two `:ci` images. The node pulls Postgres by its digest.
+- When a step fails, or when `@live` fails, the job uploads the artifact
+  `staging-e2e-<target>-report`: `reports/` (`cucumber.html`) and the NGINX, app and
+  Postgres logs.
+- `publish` tags both images the same: `sha-<short>`, `main`, `X.Y.Z`, `X.Y`, and `latest`
+  only on a release tag (no pre-release part). It builds from the cache of `build`, with
+  `provenance: mode=max` and `sbom: true`. It also makes a GitHub artifact attestation
+  (`gh attestation verify`). The E2E image is never published.
+- The workflow never changes a manifest. At release time, the operator sets the prod image
+  tag with `kustomize edit set image`.
+- `permissions: contents: read` for the workflow. Only `publish` has `packages: write`,
+  `id-token: write` and `attestations: write`. Each action is pinned to a full commit SHA,
+  with the version in a comment. kind, kubectl and kubeconform have a pinned version and
+  a SHA-256 sum.
+- #11 adds the security job to the `needs:` list of `publish`.
 
 ## Tests
 
