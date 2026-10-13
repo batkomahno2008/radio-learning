@@ -400,6 +400,7 @@ Source: the `security` job of CI run 38396134288 on `main` (commit `7b91872`). T
 | Postgres image (not a CI target) | Trivy | 1 | 24 | 29 | 3 | report only |
 
 Fixed in the pull request of issue #13: the CodeQL result `js/tainted-format-string` (S8, 1 HIGH), the zizmor result `github-env` (S9, 1 HIGH) and `js/log-injection`. The default query suite of CodeQL does not report `js/log-injection`.
+CI run 38399572295 of that pull request shows the result: S8 CodeQL 3 HIGH (only `js/missing-rate-limiting`), S9 zizmor 0 HIGH and 12 LOW. All gate steps of the `security` job pass. The other rows do not change.
 
 ### 13.2 Accepted items
 
