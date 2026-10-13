@@ -7,6 +7,21 @@ const MAX_TRACKS = 20;
 
 const isKey = (value, max) => typeof value === 'string' && value.length > 0 && value.length <= max;
 
+// Request data in a log line (CodeQL js/log-injection). Remove CR and LF, so that a
+// client cannot add a false log line. Show each other control character as \xNN,
+// because a terminal can run some of them (for example the C1 character 0x9b).
+// Show the line separators (U+2028, U+2029) and the bidi controls (U+202A to U+202E,
+// U+2066 to U+2069) as \uNNNN, because a log viewer can show them as a new line or
+// show the text in a different order.
+const LOG_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/g;
+const forLog = (value) =>
+  String(value)
+    .replace(/[\r\n]/g, '')
+    .replace(LOG_UNSAFE, (c) => {
+      const code = c.charCodeAt(0);
+      return code > 0xff ? `\\u${code.toString(16).padStart(4, '0')}` : `\\x${code.toString(16).padStart(2, '0')}`;
+    });
+
 // Totals and the rating of one client for many tracks, in one query. A track with
 // no ratings gets no row. CASE in place of FILTER, because pg-mem has no FILTER.
 const RATING_SUMMARIES = `
@@ -116,12 +131,14 @@ function createApp({ pool, streamsFile, serveStatic = true }) {
   // Express 5 sends errors from async handlers here, and also a body that is not
   // valid JSON. Answer with JSON and no stack trace; log the details to stderr.
   // Express finds an error handler by its four parameters, so keep `next`.
+  // The format string of each log line is a constant. Request data goes in as an
+  // argument, so a "%s" in a path is not a format specifier (CodeQL js/tainted-format-string).
   app.use((err, req, res, next) => {
     // Too late for a JSON answer: the Express default handler closes the connection.
     if (res.headersSent) return next(err);
     const status = err.status >= 400 && err.status < 500 ? err.status : 500;
-    if (status === 500) console.error(`${req.method} ${req.path} failed:`, err);
-    else console.error(`${req.method} ${req.path} from ${req.ip}: ${status} ${err.type || err.message}`);
+    if (status === 500) console.error('%s %s failed:', req.method, forLog(req.path), err);
+    else console.error('%s %s from %s: %d %s', req.method, forLog(req.path), forLog(req.ip), status, forLog(err.type || err.message));
     res.status(status).json({ error: status === 500 ? 'internal error' : http.STATUS_CODES[status] });
   });
 

@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const http = require('node:http');
 const { afterEach, describe, it } = require('node:test');
 const request = require('supertest');
 const { createApp } = require('../../app');
@@ -6,6 +7,23 @@ const { loadConfig } = require('../../config');
 const { captureErrors, createTestApp, writeStreamsFile } = require('./helpers');
 
 const SECRET = 'password=hunter2';
+
+// Sends one POST with node:http, with the path exactly as given. Returns the status.
+const postRaw = (app, path, body) =>
+  new Promise((resolve, reject) => {
+    const server = app.listen(0, '127.0.0.1', () => {
+      const done = (fn) => server.close(fn);
+      const req = http.request(
+        { host: '127.0.0.1', port: server.address().port, method: 'POST', path, headers: { 'Content-Type': 'application/json' } },
+        (res) => {
+          res.resume();
+          res.on('end', () => done(() => resolve(res.statusCode)));
+        },
+      );
+      req.on('error', (err) => done(() => reject(err)));
+      req.end(body);
+    });
+  });
 
 // A pool whose database is down. The error text holds data that must not leave the app.
 const brokenPool = () => ({
@@ -111,6 +129,43 @@ describe('system endpoints', () => {
       });
       assert.equal(lines.length, 3);
       assert.match(lines[0], /^GET \/api\/ratings failed: Error: connect ECONNREFUSED/);
+    });
+
+    // CodeQL js/tainted-format-string and js/log-injection (issue #13). A body that is
+    // not JSON gets 400 on any path, and the error handler logs the path.
+    // A C1 control character (U+0080 to U+009F) in the log: 0x9b is the 8-bit CSI, and
+    // some terminals start an escape sequence with it.
+    const RAW_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
+    it('logs the path as text: a format specifier in the path stays as it is', async () => {
+      const { app } = await make();
+      // supertest encodes the path. A raw request sends the characters as the client wrote them.
+      // Node itself rejects a control character in the request line, so the path has none.
+      // This test does not fail on the old code: the old 4xx log line gave console.error one
+      // string only, and util.format() gives a single string back with no change. It keeps
+      // the specifiers in the path from becoming format specifiers in a later change.
+      const lines = await captureErrors(async () => {
+        assert.equal(await postRaw(app, '/api/%s%o%d%j', '{'), 400);
+      });
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /^POST \/api\/%s%o%d%j from \S+: 400 entity\.parse\.failed$/);
+    });
+
+    it('escapes a control character in the client address from X-Forwarded-For', async () => {
+      const { api } = await make({ trustProxy: 1 });
+      const lines = await captureErrors(async () => {
+        await api
+          .post('/api/ratings')
+          .set('X-Forwarded-For', '203.0.113.7\u009b31m%s')
+          .set('Content-Type', 'application/json')
+          .send('{')
+          .expect(400);
+      });
+      assert.equal(lines.length, 1);
+      // \S* allows one more character before \x9b: supertest sends the header as UTF-8
+      // (bytes C2 9B), and Node reads a header value as Latin-1 ("\u00c2" and "\u009b").
+      assert.match(lines[0], /^POST \/api\/ratings from 203\.0\.113\.7\S*\\x9b31m%s: 400 entity\.parse\.failed$/);
+      assert.doesNotMatch(lines[0], RAW_CONTROL);
     });
 
     it('does not set X-Powered-By on an answer, an error or a 404', async () => {

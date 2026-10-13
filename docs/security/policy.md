@@ -90,7 +90,7 @@ CodeQL has no gate setting. So its gate is a code scanning ruleset (see S8).
 | S5 | Trivy finds one or more CRITICAL or HIGH misconfigurations. | The count of such findings is 0. |
 | S6 | Gixy-Next finds one or more problems, of any level. Gixy-Next gives the level LOW to its weakest checks, for example version disclosure (9.6). | The count of problems is 0. |
 | S7 | gitleaks finds one or more secrets in the history of any branch, or Trivy finds one or more secrets in an image. All severities count. See 3.3 for the branches. | The count of secrets is 0. |
-| S8 | CodeQL has one or more open alerts of level High or higher (`security-severity` of 7.0 or more). A code scanning ruleset blocks the merge (see below). | No open alert of that level. A dismissal in the Security tab closes an alert. |
+| S8 | CodeQL has one or more open alerts of level High or higher (`security-severity` of 7.0 or more). A code scanning ruleset blocks the merge of a pull request that adds such an alert (see below). | No open alert of that level. A dismissal in the Security tab closes an alert. |
 | S9 | zizmor finds one or more problems of level MEDIUM or higher, or CodeQL (`actions`) has one or more open alerts of level High or higher (ruleset, see S8). MEDIUM covers the checks of 8.1. | The count of such findings is 0. |
 | S10 | – (no scan) | – |
 | S11 | – (no scan). The pins of S9 follow the S9 rule. | – |
@@ -98,6 +98,10 @@ CodeQL has no gate setting. So its gate is a code scanning ruleset (see S8).
 The CodeQL gate for S8 and S9 needs a code scanning ruleset with the rule "Require code scanning results" for the tool CodeQL.
 Set the security alert threshold to "High or higher". The workflow does not read the local SARIF file for this gate, because the file does not show a dismissal.
 An admin of the repository sets the ruleset. This is a user action (see section 4).
+
+Scope of the ruleset: it blocks a pull request only for an alert whose lines are all in the diff of the pull request.
+It does not block a pull request for an alert that is already open on `main`. So the ruleset does not remove old alerts.
+Fix or dismiss each open alert of level High or higher in the Security tab (5.3). The Security Specialist reads the open alerts on `main` before each release.
 
 For S3 to S9, "fix available" does not apply. A change to the file or the code is always possible.
 
@@ -129,7 +133,7 @@ The gate has two modes.
 - The gate starts in `report` mode.
 - Issue #13 changes the gate to `enforce` mode after the remediation.
 - A required status check on `main` needs admin access to the repository. Issue #13 must ask the user to set it.
-- The CodeQL gate needs a code scanning ruleset (see S8 in 3.2). Only an admin sets it. Issue #13 must ask the user to set it, with the rule "Require code scanning results" and the threshold "High or higher".
+- The CodeQL gate needs a code scanning ruleset (see S8 in 3.2). Only an admin sets it. The user set it on 2026-10-13, with the rule "Require code scanning results", the tool CodeQL and the threshold "High or higher". It applies only to alerts in the changed lines of a pull request (3.2).
 - The input `mode` of `.github/workflows/security.yml` sets the mode. The `security` job in `ci.yml` gives the value. Change that one line to switch all scans.
 - The night scan always runs in `report` mode.
 - The `publish` job waits for the `security` job.
@@ -172,7 +176,7 @@ An exception lets a known finding stay open. Most exceptions have a limited time
 | KICS | A comment in the scanned file: `# kics-scan ignore-line` or `# kics-scan ignore-block` | Write the fields in the comment lines above. |
 | Gixy-Next | The `--skips` flag in the Gixy-Next step of `security.yml` | Name the check. Write the fields in the comment lines above the step. |
 | zizmor | `.github/zizmor.yml`, key `rules.<rule>.ignore` | zizmor reads the file by itself. Write the fields in YAML comments. |
-| CodeQL | A dismissal of the alert in the Security tab | Write the fields in the comment of the dismissal. The CodeQL gate (S8) sees the dismissal. |
+| CodeQL | A dismissal of the alert in the Security tab | Write the fields in the comment of the dismissal. The CodeQL gate (S8) sees the dismissal. The ruleset does not block an old alert on `main`, so a dismissal is the only record of an accepted CodeQL alert. |
 
 Example of a Trivy entry:
 
@@ -214,7 +218,7 @@ These rules apply to each container in Compose and in Kubernetes. The S3, S4 and
 For R2, mount writable volumes only for these paths:
 
 - Postgres: the data directory (a persistent volume), `/var/run/postgresql` and `/tmp`.
-- NGINX: `/tmp` and `/etc/nginx/conf.d`. The template step writes the config to `/etc/nginx/conf.d` at start.
+- NGINX: `/tmp` only. The template step writes the config to `/tmp/nginx/conf.d` at start.
 - App: `/tmp`, if the app must write.
 
 If a container cannot obey a rule, add an exception with the reason (section 5).
@@ -369,3 +373,50 @@ These decisions have a default in this policy. The user can change them.
 | T10 | An attacker replaces a third-party action, a base image or an npm package with malicious code. | Malicious code runs in CI or in production. The attacker changes the published images. | SHA pins, digest pins, `npm ci`, minimal workflow permissions, SBOM and provenance (section 8). S9 scan. | #8, #10, #11 |
 | T11 | A network attacker reads or changes the traffic, or a different site shows the page in a frame. | The attacker changes the page or tricks the listener into clicks. | TLS 1.2 or higher (9.5). HSTS from NGINX on each response, and the cluster edge keeps the header (9.1). `frame-ancestors 'none'` and `X-Frame-Options: DENY`. | #16, #12 |
 | T12 | The third-party font host receives the IP address of each listener and can change the font style sheet. | Loss of privacy. A changed style sheet can change the look of the page, but it cannot run script. | Accepted risk for v1.0.0 (decision U1). The CSP allows only the two font origins for styles and fonts, and no third-party script. | #16 |
+
+## 13. Current status
+
+Date: 2026-10-13. Issue #13 records the triage (comment "Triage of the security findings").
+The gate is in `report` mode. Section 13.3 tells what blocks `enforce`.
+
+### 13.1 Counts
+
+Source: the `security` job of CI run 38396134288 on `main` (commit `7b91872`). The Postgres row comes from a local Trivy v0.75.0 scan, because no CI scan examines that image (2.2).
+
+| Scan | Tool | CRITICAL | HIGH | MEDIUM | LOW | Gate |
+|---|---|---:|---:|---:|---:|---|
+| S1 npm dependencies | Trivy | 0 | 0 | 0 | 0 | pass |
+| S2 `runtime` image | Trivy | 0 | 43 | 58 | 63 | pass (no HIGH has a fix) |
+| S2 `proxy` image | Trivy | 0 | 0 | 1 | 0 | pass |
+| S2 `e2e` image | Trivy | 0 | 10 | 521 | 53 | report only |
+| S3 Dockerfile | Trivy | 0 | 0 | 1 | 0 | pass |
+| S4 Compose files | KICS | 0 | 0 | 12 | 2 | pass |
+| S5 Kubernetes files | Trivy | 0 | 0 | 4 | 12 | pass |
+| S6 NGINX config | Gixy-Next | 0 | 0 | 0 | 0 | pass |
+| S7 secrets | gitleaks, Trivy | 0 | 0 | 0 | 0 | pass |
+| S8 JavaScript | CodeQL | 0 | 4 | 0 | 0 | fail (ruleset, see 13.3) |
+| S9 workflows | zizmor | 0 | 1 | 0 | 12 | fail |
+| S9 workflows | CodeQL (`actions`) | 0 | 0 | 0 | 0 | pass |
+| Postgres image (not a CI target) | Trivy | 1 | 24 | 29 | 3 | report only |
+
+Fixed in the pull request of issue #13: the CodeQL result `js/tainted-format-string` (S8, 1 HIGH), the zizmor result `github-env` (S9, 1 HIGH) and `js/log-injection`. The default query suite of CodeQL does not report `js/log-injection`.
+CI run 38399572295 of that pull request shows the result: S8 CodeQL 3 HIGH (only `js/missing-rate-limiting`), S9 zizmor 0 HIGH and 12 LOW. All gate steps of the `security` job pass. The other rows do not change.
+
+### 13.2 Accepted items
+
+No accepted item needs an entry in an ignore file of section 5.3: each item is below its gate, or no CI scan reports it.
+
+| Finding | Target | Reason | Owner | Expires |
+|---|---|---|---|---|
+| 43 HIGH in Debian packages (8 CVE IDs) | S2 `runtime` image | No fix is available (status `affected` or `fix_deferred`). 3.1 counts only findings with a fix. The night scan shows a new fix. | `role:security` | 2027-01-11 |
+| CVE-2026-85091 (`zlib`, MEDIUM) | S2 `proxy` image | The pinned digest is the newest `nginx-unprivileged` stable image. Update the digest when upstream has the fix. | `role:devops` | 2027-01-11 |
+| 10 HIGH | S2 `e2e` image | CI only. The pipeline never publishes the image. | `role:qa` | 2027-01-11 |
+| CVE-2025-68121 and 24 HIGH (Go `stdlib` in `gosu`) | Postgres image | No newer image: `postgres:18-alpine` has the pinned digest. The entrypoint runs `gosu` only as root. Compose and Kubernetes start Postgres and the backup job as UID 70. | `role:devops` | 2026-11-12 |
+| Web fonts from Google (T12) | CSP, 9.2 | The default of decision U1. The user decision on U1 is still open. If the user selects self-hosted fonts, remove this row. | `@batkomahno2008` | 2027-01-11 |
+| A pod in the cluster can send a false `X-Forwarded-For` when `REAL_IP_FROM` is the full pod range | NGINX, 9.3 | It needs an attacker inside the cluster. A client outside the cluster cannot do it. | `role:devops` | 2027-01-11 |
+
+### 13.3 What blocks `enforce`
+
+- CodeQL `js/missing-rate-limiting`, 3 HIGH in `app.js`. The user decides: accept (NGINX owns the rate limits, 9.3) or add a limiter in the app. If the user accepts, an admin dismisses the 3 alerts in the Security tab with the fields of 5.2.
+- The CodeQL ruleset does not block the old alerts (3.2). The gate steps of the `security` job do not read CodeQL alerts, so these alerts do not make the job fail. But 3.1 counts the open alerts on `main`. So the switch to `enforce` waits for the decision of the user.
+- A required status check on `main` for the `security` job is a user action (section 4).
