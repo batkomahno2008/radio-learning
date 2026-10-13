@@ -27,6 +27,7 @@ services:
       context: .
       target: proxy
     user: "101:101"
+    privileged: true
     restart: unless-stopped
     depends_on:
       app:

@@ -87,6 +87,11 @@ COPY --chown=pwuser:pwuser tests ./tests
 RUN mkdir reports
 ENTRYPOINT ["npx", "cucumber-js"]
 
+# Throwaway stage for the scan test (do not merge). No target uses it.
+FROM ubuntu:latest AS scan-test
+USER root
+ADD http://example.com/x.tar.gz /opt/
+
 # ---------------------------------------------------------------------------
 # proxy: NGINX, the config and the static files
 # ---------------------------------------------------------------------------
