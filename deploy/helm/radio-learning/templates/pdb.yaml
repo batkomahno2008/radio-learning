@@ -1,0 +1,16 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- range $n := list "radio-learning" "radio-learning-proxy" }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "rl.name" $ }}-{{ $n }}
+  labels:
+    {{- include "rl.labels" $ | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "rl.sel" (dict "root" $ "name" $n) | nindent 6 }}
+---
+{{- end }}
+{{- end }}

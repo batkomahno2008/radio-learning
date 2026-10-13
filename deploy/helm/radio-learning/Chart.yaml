@@ -1,0 +1,7 @@
+apiVersion: v2
+name: radio-learning
+description: Radio Learning internet radio player. NGINX, the Node app and Postgres.
+type: application
+version: 0.1.0
+# The default image tag. Set images.*.tag to use a different tag.
+appVersion: main

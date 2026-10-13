@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rl.name" . }}-app
+  labels:
+    {{- include "rl.labels" . | nindent 4 }}
+    {{- include "rl.sel" (dict "root" . "name" "radio-learning") | nindent 4 }}
+spec:
+  replicas: {{ .Values.app.replicas }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector:
+    matchLabels:
+      {{- include "rl.sel" (dict "root" . "name" "radio-learning") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rl.labels" . | nindent 8 }}
+        {{- include "rl.sel" (dict "root" . "name" "radio-learning") | nindent 8 }}
+      annotations:
+        checksum/streams: {{ include (print $.Template.BasePath "/configmaps.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      {{- include "rl.pullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: app
+          image: {{ include "rl.appImage" . }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          ports:
+            - {name: http, containerPort: 3000}
+          env:
+            - {name: HOST, value: "0.0.0.0"}
+            - {name: PORT, value: "3000"}
+            - {name: SERVE_STATIC, value: "false"}
+            - {name: TRUST_PROXY, value: "1"}
+            - {name: STREAMS_FILE, value: /config/streams.txt}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: {{ include "rl.secretName" . }}, key: DATABASE_URL}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            {{- toYaml .Values.app.resources | nindent 12 }}
+          startupProbe:
+            httpGet: {path: /api/health, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /api/health, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /api/ready, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              sleep: {seconds: 5}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: streams, mountPath: /config, readOnly: true}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+        - name: streams
+          configMap:
+            name: {{ include "rl.name" . }}-streams
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rl.name" . }}-app
+  labels:
+    {{- include "rl.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "rl.sel" (dict "root" . "name" "radio-learning") | nindent 4 }}
+  ports:
+    - {name: http, port: 80, targetPort: http}
